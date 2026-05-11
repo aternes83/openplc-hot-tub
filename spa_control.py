@@ -368,8 +368,8 @@ _BIG_SP_X   = 117
 _BIG_SP_Y   = 148
 
 TIMER_LABEL_WIDTH = 186
-TIMER_SPA_POS     = (288, 210)
-TIMER_LIGHT_POS   = (288, 230)
+TIMER_SPA_POS     = (288, 243)
+TIMER_LIGHT_POS   = (288, 261)
 
 UI_LIMITS = {
     "SETPOINT_MIN_F": 80.0,
@@ -378,17 +378,25 @@ UI_LIMITS = {
 }
 
 # ── Touch button rects (x, y, w, h) ──────────────────────────────────────────
+# Right-panel vertical layout (y from top):
+#   y=64   PUMP 1  [OFF][LOW][HI]    h=32
+#   y=120  PUMP 2/3  [PUMP 2][PUMP 3]   h=32
+#   y=173  HEAT/LIGHT  [HEAT][LIGHT]   h=44
+#   y=221  divider → RUN TIMERS
 UI_BUTTONS = {
     # Temperature panel – setpoint adjust
     "setpoint_minus": (98,  210, 78, 48),
     "setpoint_plus":  (194, 210, 78, 48),
-    # Controls panel – PUMP 1
-    "pump_off":  (286,  68, 58, 36),
-    "pump_low":  (350,  68, 58, 36),
-    "pump_high": (414,  68, 56, 36),
+    # Controls panel – PUMP 1 (three-state)
+    "pump_off":  (286,  64, 58, 32),
+    "pump_low":  (350,  64, 58, 32),
+    "pump_high": (414,  64, 56, 32),
+    # Controls panel – PUMP 2 & 3 (toggles)
+    "pump2": (286, 120, 89, 32),
+    "pump3": (383, 120, 89, 32),
     # Controls panel – heat & light
-    "heat":  (286, 130, 90, 54),
-    "light": (386, 130, 90, 54),
+    "heat":  (286, 173, 89, 44),
+    "light": (383, 173, 89, 44),
 }
 
 TOUCH_BUTTON_ORDER = (
@@ -396,6 +404,8 @@ TOUCH_BUTTON_ORDER = (
     "pump_off",
     "pump_low",
     "pump_high",
+    "pump2",
+    "pump3",
     "light",
     "setpoint_minus",
     "setpoint_plus",
@@ -628,13 +638,21 @@ def _draw_static_frame(lcd):
     _draw_button_v2(lcd, UI_BUTTONS["setpoint_plus"],  "  +  ")
     lcd.text("RANGE: 80 - 104 F", 108, 273, C_DIM)
 
-    # Controls panel
+    # Controls panel – PUMP 1 section
     lcd.text("PUMP 1", 357, 36, C_LABEL)
-    lcd.fill_rect(_PNL_C_X, 56,  _PNL_C_W, 1, C_BORDER)
-    lcd.fill_rect(_PNL_C_X, 116, _PNL_C_W, 1, C_BORDER)
-    lcd.text("HEAT / LIGHT", 333, 120, C_LABEL)
-    lcd.fill_rect(_PNL_C_X, 190, _PNL_C_W, 1, C_BORDER)
-    lcd.text("RUN TIMERS", 341, 196, C_LABEL)
+    lcd.fill_rect(_PNL_C_X, 56,  _PNL_C_W, 1, C_BORDER)   # top divider
+
+    # Controls panel – PUMP 2 / 3 section
+    lcd.fill_rect(_PNL_C_X, 100, _PNL_C_W, 1, C_BORDER)
+    lcd.text("PUMP 2 / 3", 341, 108, C_LABEL)
+
+    # Controls panel – HEAT / LIGHT section
+    lcd.fill_rect(_PNL_C_X, 156, _PNL_C_W, 1, C_BORDER)
+    lcd.text("HEAT / LIGHT", 333, 164, C_LABEL)
+
+    # Controls panel – RUN TIMERS section
+    lcd.fill_rect(_PNL_C_X, 221, _PNL_C_W, 1, C_BORDER)
+    lcd.text("RUN TIMERS", 341, 229, C_LABEL)
 
 
 def _touch_point(touch):
@@ -723,7 +741,8 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
     """
     Handle tap actions:
     - Heat toggle
-    - Pump mode (off/low/high)
+    - Pump 1 mode (off/low/high)
+    - Pump 2 / Pump 3 toggle
     - Light toggle
     - Setpoint +/- (F)
     """
@@ -767,6 +786,12 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
         if ui_state["pump1_mode"] != 2:
             ui_state["pump1_mode"] = 2
             handled = True
+    elif button == "pump2":
+        ui_state["pump2_on"] = not ui_state.get("pump2_on", False)
+        handled = True
+    elif button == "pump3":
+        ui_state["pump3_on"] = not ui_state.get("pump3_on", False)
+        handled = True
     elif button == "light":
         ui_state["xLightRequest"] = not ui_state["xLightRequest"]
         handled = True
@@ -800,6 +825,8 @@ def apply_ui_overrides(inputs, ui_state):
     values["xLightRequest"] = ui_state["xLightRequest"]
     values["xPump1HighRequest"] = ui_state["pump1_mode"] == 2
     values["xPumpRequest"] = ui_state["pump1_mode"] in (1, 2)
+    values["xPump2Request"] = bool(ui_state.get("pump2_on", False))
+    values["xPump3Request"] = bool(ui_state.get("pump3_on", False))
     return values
 
 
@@ -827,6 +854,8 @@ def _dynamic_snapshot(inputs, outputs, ctrl, ui_state):
         ui_state["pump1_mode"],
         bool(ui_state["xHeatRequest"]),
         bool(ui_state["xLightRequest"]),
+        bool(ui_state.get("pump2_on", False)),
+        bool(ui_state.get("pump3_on", False)),
         int(bool(outputs.get("xPump1_Low"))),
         int(bool(outputs.get("xPump1_High"))),
         int(bool(outputs.get("xPump2"))),
@@ -875,8 +904,10 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
     heat_req  = ui_state["xHeatRequest"]
     light_req = ui_state["xLightRequest"]
     pump_mode = ui_state["pump1_mode"]
+    pump2_on  = bool(ui_state.get("pump2_on", False))
+    pump3_on  = bool(ui_state.get("pump3_on", False))
     heater_on = bool(outputs.get("xHeater"))
-    pump_on   = pump_mode > 0
+    pump_on   = pump_mode > 0 or pump2_on or pump3_on
     fault     = bool(outputs.get("xFault"))
     fc        = int(outputs.get("iFaultCode", 0))
 
@@ -887,14 +918,13 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
                    C_SP_ON, C_BG)
 
     # ── Status panel: LED indicators ─────────────────────────────────────────
-    # HEAT LED: amber when heater element is on, green when requested, off otherwise
     heat_led = C_LED_AM if heater_on else (C_LED_GN if heat_req else C_LED_OFF)
     _draw_led(lcd, 10, 64, heat_led)
     _draw_led(lcd, 10, 96,  C_LED_CY if pump_on   else C_LED_OFF)
     _draw_led(lcd, 10, 128, C_LED_YE if light_req else C_LED_OFF)
     _draw_led(lcd, 10, 160, C_FAULT  if fault     else C_LED_OFF)
 
-    # Fault / heater status text lines
+    # Fault / heater status text
     lcd.fill_rect(4, 180, 80, 10, C_PANEL)
     lcd.text("FC:%d" % fc if fc else "OK", 4, 182,
              C_FAULT if fault else C_LED_GN)
@@ -902,13 +932,19 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
     lcd.text("HTR:%s" % ("ON" if heater_on else "OFF"), 4, 200,
              C_LED_AM if heater_on else C_DIM)
 
-    # ── Controls panel: pump buttons ─────────────────────────────────────────
+    # ── Controls panel: PUMP 1 buttons ───────────────────────────────────────
     _draw_button_v2(lcd, UI_BUTTONS["pump_off"],  "OFF",
                     active=(pump_mode == 0), act_color=C_BTN_P_AC)
     _draw_button_v2(lcd, UI_BUTTONS["pump_low"],  "LOW",
                     active=(pump_mode == 1), act_color=C_BTN_P_AC)
     _draw_button_v2(lcd, UI_BUTTONS["pump_high"], "HI",
                     active=(pump_mode == 2), act_color=C_BTN_P_AC)
+
+    # ── Controls panel: PUMP 2 & 3 toggles ───────────────────────────────────
+    _draw_button_v2(lcd, UI_BUTTONS["pump2"], "PUMP 2",
+                    active=pump2_on, act_color=C_BTN_P_AC)
+    _draw_button_v2(lcd, UI_BUTTONS["pump3"], "PUMP 3",
+                    active=pump3_on, act_color=C_BTN_P_AC)
 
     # ── Controls panel: heat & light buttons ─────────────────────────────────
     _draw_button_v2(lcd, UI_BUTTONS["heat"],  "HEAT",
@@ -980,7 +1016,9 @@ def main(loop_ms=CONTROL_LOOP_MS):
     ui_state = {
         "xHeatRequest": False,
         "xLightRequest": False,
-        "pump1_mode": 1,  # 0=off, 1=low, 2=high
+        "pump1_mode": 1,   # 0=off, 1=low, 2=high
+        "pump2_on": False,
+        "pump3_on": False,
         "touch_button": None,
         "last_touch_ms": 0,
         "_render_error_logged": False,
