@@ -1,0 +1,16 @@
+python3 -m pip install --upgrade esptool
+python3 -m esptool --chip esp32s3 --port /dev/cu.usbserial-8330  erase_flash
+python3 -m esptool --chip esp32s3 --port /dev/cu.usbserial-8330  --baud 460800 write_flash -z 0 ESP32_GENERIC_S3-20260406-v1.28.0.bin
+
+python3 -m mpremote connect /dev/cu.usbserial-8330 fs cp "/Users/adrianternes/Documents/Cursor PRojects/openplc-hot-tub/spa_control.py" :main.py
+python3 -m mpremote connect /dev/cu.usbserial-8330 fs cp "/Users/adrianternes/Documents/Cursor PRojects/openplc-hot-tub/st7796.py" :st7796.py
+python3 -m mpremote connect /dev/cu.usbserial-8330 fs cp "/Users/adrianternes/Documents/Cursor PRojects/openplc-hot-tub/xpt2046.py" :xpt2046.py
+python3 -m mpremote connect /dev/cu.usbserial-8330 reset
+python3 -m mpremote connect /dev/cu.usbserial-8330  fs ls
+
+python3 -m mpremote connect /dev/cu.usbmodem83301 fs cp "/Users/adrianternes/Documents/Cursor PRojects/openplc-hot-tub/spa_control.py" :main.py 
+python3 -m mpremote connect /dev/cu.usbmodem83301 fs cp "/Users/adrianternes/Documents/Cursor PRojects/openplc-hot-tub/st7796.py" :st7796.py
+python3 -m mpremote connect /dev/cu.usbmodem83301 fs cp "/Users/adrianternes/Documents/Cursor PRojects/openplc-hot-tub/xpt2046.py" :xpt2046.py
+python3 -m mpremote connect /dev/cu.usbmodem83301 fs ls
+
+python3 -m mpremote connect /dev/cu.usbserial-8330 fs cp "/Users/adrianternes/Documents/Cursor PRojects/openplc-hot-tub/st7796.py" :st7796.py

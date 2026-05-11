@@ -1,0 +1,11 @@
+# MicroPython bytecode cache
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS metadata
+.DS_Store
+
+# Editor / IDE
+.vscode/
+*.swp
