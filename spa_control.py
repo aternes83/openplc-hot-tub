@@ -20,6 +20,8 @@ try:
 except ImportError:  # fallback for local simulation
     import time as time_mod
 
+import math
+
 try:
     from machine import Pin, SPI
 except ImportError:  # local testing stub
@@ -329,74 +331,89 @@ TOUCH_SETPOINT_REPEAT_MS = 150
 # ── HMI colour palette (RGB565) ──────────────────────────────────────────────
 C_BG       = 0x0820   # deep navy background
 C_PANEL    = 0x1082   # dark panel fill
-C_HDR_BG   = 0x0438   # header bar (very dark blue)
 C_BORDER   = 0x2965   # panel border / divider
-C_ACCENT   = 0x07FF   # cyan accent strip
 C_TEXT     = 0xFFFF   # primary white text
 C_LABEL    = 0xC618   # secondary grey label
 C_DIM      = 0x4208   # dimmed / ghost
-C_SEG_ON   = 0x07FF   # 7-seg cyan – water temperature reading
-C_SP_ON    = 0x07E0   # 7-seg green – setpoint
-C_LED_GN   = 0x07E0   # LED green  (heat requested / pump on / light on)
-C_LED_AM   = 0xFD20   # LED amber  (heater element energised)
+C_SEG_ON   = 0x07FF   # temperature display (cyan)
+C_SP_ON    = 0x07E0   # setpoint display (green)
+C_LED_GN   = 0x07E0   # LED green
+C_LED_AM   = 0xFD20   # LED amber (heater energised)
 C_LED_YE   = 0xFFE0   # LED yellow (light on)
-C_LED_CY   = 0x07FF   # LED cyan   (pump running)
+C_LED_CY   = 0x07FF   # LED cyan (pump running)
 C_LED_OFF  = 0x2104   # LED inactive dark
-C_BTN_NORM = 0x2965   # button idle background
-C_BTN_P_AC = 0x0099   # pump button active (dark cyan)
-C_BTN_H_AC = 0x6200   # heat button active (dark amber)
-C_BTN_L_AC = 0x4420   # light button active (dark yellow-green)
+C_BTN_NORM = 0x2965   # button idle
+C_BTN_P_AC = 0x0099   # pump active (dark cyan)
+C_BTN_H_AC = 0x6200   # heat active (dark amber)
+C_BTN_L_AC = 0x4420   # light active (dark yellow-green)
 C_FAULT    = 0xF800   # fault red
 
-# ── Panel geometry (landscape 480 × 320) ─────────────────────────────────────
-_HDR_H = 28
-_PNL_Y = 28
-_PNL_H = 292   # 320 - 28
+# ── Panel geometry (landscape 480 × 320, no title bar) ───────────────────────
+_PNL_Y = 0
+_PNL_H = 320
 _PNL_S_X, _PNL_S_W = 0,   88    # status panel
 _PNL_T_X, _PNL_T_W = 88,  194   # temperature panel
 _PNL_C_X, _PNL_C_W = 282, 198   # controls panel
 
-# ── 7-segment digit dimensions (24 × 41 px, pitch 28) ────────────────────────
-_DIG_W, _DIG_H, _DIG_P = 24, 41, 28
-# bit0=a(top) 1=b(TR) 2=c(BR) 3=d(bot) 4=e(BL) 5=f(TL) 6=g(mid)
-_SEG_MASKS = (63, 6, 91, 79, 102, 109, 125, 7, 127, 111)
+# ── Modern 5 × 7 pixel font (bit4=leftmost col, 7 rows per digit) ────────────
+_FONT5X7 = (
+    (14, 17, 17, 17, 17, 17, 14),  # 0
+    ( 4, 12,  4,  4,  4,  4, 14),  # 1
+    (14, 17,  1,  6,  8, 16, 31),  # 2
+    (14, 17,  1,  6,  1, 17, 14),  # 3
+    ( 6, 10, 18, 31,  2,  2,  2),  # 4
+    (31, 16, 30,  1,  1, 17, 14),  # 5
+    (14, 16, 16, 30, 17, 17, 14),  # 6
+    (31,  1,  2,  4,  8,  8,  8),  # 7
+    (14, 17, 17, 14, 17, 17, 14),  # 8
+    (14, 17, 17, 15,  1,  1, 14),  # 9
+)
+_TEMP_SCALE = 9    # px/pixel for main temp  → digit 45 × 63 px
+_SP_SCALE   = 7    # px/pixel for setpoint   → digit 35 × 49 px
 
-# Big-digit origins (centred inside 194-px temperature panel)
-_BIG_TEMP_X = 117
-_BIG_TEMP_Y = 64
-_BIG_SP_X   = 117
-_BIG_SP_Y   = 148
+# 3-digit strip origins (centred in 194-px temperature panel)
+_TEMP_PITCH  = 5 * _TEMP_SCALE + max(1, _TEMP_SCALE // 2)   # 49
+_SP_PITCH    = 5 * _SP_SCALE   + max(1, _SP_SCALE   // 2)   # 38
+_BIG_TEMP_X  = _PNL_T_X + (_PNL_T_W - 3 * _TEMP_PITCH) // 2   # ≈ 113
+_BIG_TEMP_Y  = 38
+_BIG_SP_X    = _PNL_T_X + (_PNL_T_W - 3 * _SP_PITCH)   // 2   # ≈ 130
+_BIG_SP_Y    = 137
+_TEMP_DEG_X  = _BIG_TEMP_X + 3 * _TEMP_PITCH + 4   # °F label x after temp digits
+_SP_DEG_X    = _BIG_SP_X   + 3 * _SP_PITCH   + 3   # °F label x after SP digits
+
+# ── Semi-circular setpoint slider ─────────────────────────────────────────────
+_ARC_CX  = _PNL_T_X + _PNL_T_W // 2   # = 185
+_ARC_CY  = 285
+_ARC_R   = 70
+_ARC_T   = 10
+_ARC_MIN = 80.0
+_ARC_MAX = 104.0
 
 TIMER_LABEL_WIDTH = 186
-TIMER_SPA_POS     = (288, 243)
-TIMER_LIGHT_POS   = (288, 261)
+TIMER_SPA_POS     = (288, 215)
+TIMER_LIGHT_POS   = (288, 233)
 
 UI_LIMITS = {
-    "SETPOINT_MIN_F": 80.0,
-    "SETPOINT_MAX_F": 104.0,
+    "SETPOINT_MIN_F": _ARC_MIN,
+    "SETPOINT_MAX_F": _ARC_MAX,
     "SETPOINT_STEP_F": 1.0,
 }
 
 # ── Touch button rects (x, y, w, h) ──────────────────────────────────────────
-# Right-panel vertical layout (y from top):
-#   y=64   PUMP 1  [OFF][LOW][HI]    h=32
-#   y=120  PUMP 2/3  [PUMP 2][PUMP 3]   h=32
-#   y=173  HEAT/LIGHT  [HEAT][LIGHT]   h=44
-#   y=221  divider → RUN TIMERS
+# Controls panel y-values shifted up 28 px vs. v1 (title bar removed).
 UI_BUTTONS = {
-    # Temperature panel – setpoint adjust
-    "setpoint_minus": (98,  210, 78, 48),
-    "setpoint_plus":  (194, 210, 78, 48),
+    # Temperature panel – arc slider (bounding box; angle logic in touch handler)
+    "arc_slider": (90, 210, 190, 100),
     # Controls panel – PUMP 1 (three-state)
-    "pump_off":  (286,  64, 58, 32),
-    "pump_low":  (350,  64, 58, 32),
-    "pump_high": (414,  64, 56, 32),
+    "pump_off":  (286, 36, 58, 32),
+    "pump_low":  (350, 36, 58, 32),
+    "pump_high": (414, 36, 56, 32),
     # Controls panel – PUMP 2 & 3 (toggles)
-    "pump2": (286, 120, 89, 32),
-    "pump3": (383, 120, 89, 32),
+    "pump2": (286, 92, 89, 32),
+    "pump3": (383, 92, 89, 32),
     # Controls panel – heat & light
-    "heat":  (286, 173, 89, 44),
-    "light": (383, 173, 89, 44),
+    "heat":  (286, 145, 89, 44),
+    "light": (383, 145, 89, 44),
 }
 
 TOUCH_BUTTON_ORDER = (
@@ -407,8 +424,7 @@ TOUCH_BUTTON_ORDER = (
     "pump2",
     "pump3",
     "light",
-    "setpoint_minus",
-    "setpoint_plus",
+    "arc_slider",
 )
 
 _hmi_lcd_cs = None
@@ -521,61 +537,131 @@ def init_hmi():
     return lcd, touch
 
 
-# ── 7-segment & big-digit helpers ────────────────────────────────────────────
+# ── Modern 5 × 7 pixel-font digit drawing ────────────────────────────────────
 
-def _seg_digit(lcd, d, x, y, fg, bg):
-    """Draw one 24 × 41 px 7-segment digit.  d=0-9; anything else = blank."""
-    lcd.fill_rect(x, y, _DIG_W, _DIG_H, bg)
+def _draw_digit_5x7(lcd, d, x, y, s, fg, bg):
+    """
+    Draw digit d (0-9) using the _FONT5X7 pixel font at scale s.
+    Area painted: 5s wide, 7s tall.  Background cleared automatically.
+    """
+    lcd.fill_rect(x, y, s * 5, s * 7, bg)
     if not (0 <= d <= 9):
         return
-    m = _SEG_MASKS[d]
-    if m & 1:   lcd.fill_rect(x + 4,  y,       16, 4,  fg)  # a  top
-    if m & 32:  lcd.fill_rect(x,       y + 5,   4,  14, fg)  # f  top-left
-    if m & 2:   lcd.fill_rect(x + 20,  y + 5,   4,  14, fg)  # b  top-right
-    if m & 64:  lcd.fill_rect(x + 4,   y + 19,  16, 4,  fg)  # g  middle
-    if m & 16:  lcd.fill_rect(x,        y + 23,  4,  14, fg)  # e  bot-left
-    if m & 4:   lcd.fill_rect(x + 20,   y + 23,  4,  14, fg)  # c  bot-right
-    if m & 8:   lcd.fill_rect(x + 4,    y + 37,  16, 4,  fg)  # d  bottom
+    rows = _FONT5X7[d]
+    for row in range(7):
+        bits = rows[row]
+        if not bits:
+            continue
+        for col in range(5):
+            if bits & (1 << (4 - col)):
+                lcd.fill_rect(x + col * s, y + row * s, s, s, fg)
 
 
-def _draw_temp_big(lcd, temp_f, x, y, fg, bg):
+def _draw_temp_int(lcd, temp_f, x, y, scale, fg, bg):
     """
-    Render a temperature value in large 7-segment style.
-    Layout: [hundreds] [tens] [ones] · [tenths]  °F
-    Always clears a fixed-width strip so stale pixels cannot linger.
-    temp_f: float, or None to show dashes.
+    Draw an integer temperature (whole degrees, no decimal) using the modern
+    5×7 pixel font.  Always occupies 3 digit positions, right-justified.
+    temp_f: float or None (shows centre-bar dashes).
     """
-    lcd.fill_rect(x, y, 4 * _DIG_P + 40, _DIG_H, bg)
+    dw    = scale * 5
+    gap   = max(1, scale // 2)
+    pitch = dw + gap
+    total_w = 3 * pitch
+    lcd.fill_rect(x, y, total_w, scale * 7, bg)
 
-    if temp_f is None or temp_f < -50:
-        for i in range(4):
-            lcd.fill_rect(x + i * _DIG_P + 4, y + 19, 16, 4, fg)
-        lcd.text("F", x + 4 * _DIG_P + 16, y + 10, C_LABEL)
+    if temp_f is None:
+        mid_y = y + scale * 3
+        for i in range(3):
+            lcd.fill_rect(x + i * pitch + scale, mid_y, scale * 3, scale, fg)
         return
 
-    val = int(round(abs(temp_f) * 10))
-    val = min(val, 1999)
-    d3 = (val // 1000) % 10
-    d2 = (val // 100) % 10
-    d1 = (val // 10) % 10
-    d0 = val % 10
+    temp_i = max(0, min(int(round(temp_f)), 999))
+    d2 = temp_i // 100
+    d1 = (temp_i // 10) % 10
+    d0 = temp_i % 10
 
-    if val >= 1000:
-        _seg_digit(lcd, d3, x, y, fg, bg)
-    _seg_digit(lcd, d2, x + _DIG_P, y, fg, bg)
-    _seg_digit(lcd, d1, x + 2 * _DIG_P, y, fg, bg)
+    if temp_i >= 100:
+        _draw_digit_5x7(lcd, d2, x,             y, scale, fg, bg)
+        _draw_digit_5x7(lcd, d1, x + pitch,     y, scale, fg, bg)
+        _draw_digit_5x7(lcd, d0, x + 2 * pitch, y, scale, fg, bg)
+    else:
+        _draw_digit_5x7(lcd, d1, x + pitch,     y, scale, fg, bg)
+        _draw_digit_5x7(lcd, d0, x + 2 * pitch, y, scale, fg, bg)
 
-    # Decimal dot (4 × 4 px square at bottom-right of the ones position)
-    lcd.fill_rect(x + 3 * _DIG_P - 4, y + 37, 4, 4, fg)
 
-    # Tenths digit (offset 4 px past dot)
-    _seg_digit(lcd, d0, x + 3 * _DIG_P + 4, y, fg, bg)
+# ── Semi-circular arc slider ──────────────────────────────────────────────────
 
-    # Degree-F symbol: small hollow ring then "F"
-    rx = x + 4 * _DIG_P + 8
-    lcd.fill_rect(rx, y + 6, 5, 5, fg)
-    lcd.fill_rect(rx + 1, y + 7, 3, 3, bg)
-    lcd.text("F", rx + 6, y + 10, C_LABEL)
+def _draw_arc_slider(lcd, sp, bg):
+    """
+    Draw an upper-half semicircular ring slider representing the temperature
+    setpoint.
+
+    The left arc end = _ARC_MIN (80 °F), right end = _ARC_MAX (104 °F).
+    The active (cyan) portion fills from the left up to the current setpoint;
+    the remainder is the inactive track colour.  A white-rimmed thumb marks
+    the exact position.
+
+    Coloring uses an exact integer cross-product — no sqrt, no per-row trig.
+    """
+    cx, cy = _ARC_CX, _ARC_CY
+    r_o  = _ARC_R
+    r_i  = _ARC_R - _ARC_T
+    r_o2 = r_o * r_o
+    r_i2 = r_i * r_i
+
+    norm  = max(0.0, min(1.0, (sp - _ARC_MIN) / (_ARC_MAX - _ARC_MIN)))
+    # theta: π = leftmost/min, 0 = rightmost/max
+    theta = math.pi * (1.0 - norm)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+
+    # Clear bounding box
+    lcd.fill_rect(cx - r_o, cy - r_o, 2 * r_o + 2, r_o + 4, bg)
+
+    # Scanline ring (dy counts upward from cy)
+    for dy in range(1, r_o + 1):
+        y_scr = cy - dy
+        if y_scr < 0:
+            continue
+        dy2 = dy * dy
+        if dy2 > r_o2:
+            break
+        xo = int((r_o2 - dy2) ** 0.5)
+        xi2 = r_i2 - dy2
+        xi  = int(xi2 ** 0.5) if xi2 >= 0 else xo
+        if xo <= xi:
+            continue
+        w  = xo - xi
+        xm = (xo + xi) // 2
+
+        # Left arm active if arc angle >= theta.
+        # Exact integer test (no extra trig): cos_t >= 0 OR xm*sin_t >= -cos_t*dy
+        if cos_t >= 0 or xm * sin_t >= -cos_t * dy:
+            l_col = C_SEG_ON
+        else:
+            l_col = C_BORDER
+
+        # Right arm active if cos_t > 0 AND xm*sin_t <= cos_t*dy
+        if cos_t > 0 and xm * sin_t <= cos_t * dy:
+            r_col = C_SEG_ON
+        else:
+            r_col = C_BORDER
+
+        lcd.fill_rect(cx - xo, y_scr, w, 1, l_col)
+        lcd.fill_rect(cx + xi,  y_scr, w, 1, r_col)
+
+    # Thumb: white 13 × 13 outer, coloured 9 × 9 inner
+    tx = cx + int(r_o * math.cos(theta) + 0.5)
+    ty = cy - int(r_o * math.sin(theta) + 0.5)
+    lcd.fill_rect(tx - 6, ty - 6, 13, 13, C_TEXT)
+    lcd.fill_rect(tx - 4, ty - 4,  9,  9, C_SEG_ON if norm > 0.01 else C_BORDER)
+
+    # End labels below the left / right arc endpoints
+    lx, rx, yl = cx - r_o - 2, cx + r_o - 26, cy + 4
+    lcd.fill_rect(lx, yl, 26, 10, bg)
+    lcd.text("80F",  lx, yl + 1, C_DIM)
+    lcd.fill_rect(rx, yl, 34, 10, bg)
+    lcd.text("104F", rx, yl + 1, C_DIM)
 
 
 # ── UI widget helpers ─────────────────────────────────────────────────────────
@@ -592,10 +678,10 @@ def _draw_button_v2(lcd, rect, label, active=False, act_color=0x0492):
     bg = act_color if active else C_BTN_NORM
     lcd.fill_rect(x, y, w, h, bg)
     hi = C_ACCENT if active else C_BORDER
-    lcd.fill_rect(x, y, w, 1, hi)           # top highlight
-    lcd.fill_rect(x, y, 1, h, hi)           # left highlight
-    lcd.fill_rect(x, y + h - 1, w, 1, C_DIM)   # bottom shadow
-    lcd.fill_rect(x + w - 1, y, 1, h, C_DIM)   # right shadow
+    lcd.fill_rect(x, y, w, 1, hi)
+    lcd.fill_rect(x, y, 1, h, hi)
+    lcd.fill_rect(x, y + h - 1, w, 1, C_DIM)
+    lcd.fill_rect(x + w - 1, y, 1, h, C_DIM)
     lx = x + (w - len(label) * 8) // 2
     ly = y + (h - 8) // 2
     lcd.text(label, lx, ly, C_TEXT)
@@ -603,56 +689,41 @@ def _draw_button_v2(lcd, rect, label, active=False, act_color=0x0492):
 
 def _draw_static_frame(lcd):
     """
-    Paint all fixed chrome once: header bar, panel fills, borders, section
-    labels, and static button outlines.  Dynamic fields are layered on top.
+    Paint all fixed chrome once.  No title bar — panels span the full 320 px.
+    Dynamic fields are layered on top by _render_dynamic_fields.
     """
-    # Header bar
-    lcd.fill_rect(0, 0, 480, _HDR_H, C_HDR_BG)
-    lcd.fill_rect(0, _HDR_H - 1, 480, 1, C_ACCENT)
-    lcd.text("SPA CONTROL", 8, 10, C_TEXT)
-
     # Panel fills
-    lcd.fill_rect(_PNL_S_X, _PNL_Y, _PNL_S_W, _PNL_H, C_PANEL)
-    lcd.fill_rect(_PNL_T_X, _PNL_Y, _PNL_T_W, _PNL_H, C_BG)
-    lcd.fill_rect(_PNL_C_X, _PNL_Y, _PNL_C_W, _PNL_H, C_PANEL)
+    lcd.fill_rect(_PNL_S_X, 0, _PNL_S_W, _PNL_H, C_PANEL)
+    lcd.fill_rect(_PNL_T_X, 0, _PNL_T_W, _PNL_H, C_BG)
+    lcd.fill_rect(_PNL_C_X, 0, _PNL_C_W, _PNL_H, C_PANEL)
 
     # Vertical panel dividers
-    lcd.fill_rect(_PNL_S_X + _PNL_S_W, _PNL_Y, 2, _PNL_H, C_BORDER)
-    lcd.fill_rect(_PNL_T_X + _PNL_T_W, _PNL_Y, 2, _PNL_H, C_BORDER)
+    lcd.fill_rect(_PNL_S_X + _PNL_S_W, 0, 2, _PNL_H, C_BORDER)
+    lcd.fill_rect(_PNL_T_X + _PNL_T_W, 0, 2, _PNL_H, C_BORDER)
 
-    # Status panel
-    lcd.text("STATUS", 20, 36, C_LABEL)
-    lcd.fill_rect(0, 56, _PNL_S_W, 1, C_BORDER)
-    lcd.text("HEAT",  26, 68,  C_LABEL)
-    lcd.text("PUMP",  26, 100, C_LABEL)
-    lcd.text("LITE",  26, 132, C_LABEL)
-    lcd.text("FAULT", 26, 164, C_LABEL)
+    # ── Status panel ─────────────────────────────────────────────────────────
+    lcd.text("STATUS", 20,  8, C_LABEL)
+    lcd.fill_rect(0, 28, _PNL_S_W, 1, C_BORDER)
+    lcd.text("HEAT",  26, 40,  C_LABEL)
+    lcd.text("PUMP",  26, 72,  C_LABEL)
+    lcd.text("LITE",  26, 104, C_LABEL)
+    lcd.text("FAULT", 26, 136, C_LABEL)
 
-    # Temperature panel
-    lcd.text("WATER TEMP", 145, 36, C_LABEL)
-    lcd.fill_rect(_PNL_T_X, 56,  _PNL_T_W, 1, C_BORDER)
-    lcd.fill_rect(_PNL_T_X, 125, _PNL_T_W, 1, C_BORDER)
-    lcd.text("SETPOINT", 153, 132, C_LABEL)
-    lcd.fill_rect(_PNL_T_X, 200, _PNL_T_W, 1, C_BORDER)
-    _draw_button_v2(lcd, UI_BUTTONS["setpoint_minus"], "  -  ")
-    _draw_button_v2(lcd, UI_BUTTONS["setpoint_plus"],  "  +  ")
-    lcd.text("RANGE: 80 - 104 F", 108, 273, C_DIM)
+    # ── Temperature panel ─────────────────────────────────────────────────────
+    lcd.text("WATER TEMP", 145, 8, C_LABEL)
+    lcd.fill_rect(_PNL_T_X, 28,  _PNL_T_W, 1, C_BORDER)
+    lcd.fill_rect(_PNL_T_X, 120, _PNL_T_W, 1, C_BORDER)
+    lcd.text("TARGET TEMP", 141, 128, C_LABEL)
 
-    # Controls panel – PUMP 1 section
-    lcd.text("PUMP 1", 357, 36, C_LABEL)
-    lcd.fill_rect(_PNL_C_X, 56,  _PNL_C_W, 1, C_BORDER)   # top divider
-
-    # Controls panel – PUMP 2 / 3 section
-    lcd.fill_rect(_PNL_C_X, 100, _PNL_C_W, 1, C_BORDER)
-    lcd.text("PUMP 2 / 3", 341, 108, C_LABEL)
-
-    # Controls panel – HEAT / LIGHT section
-    lcd.fill_rect(_PNL_C_X, 156, _PNL_C_W, 1, C_BORDER)
-    lcd.text("HEAT / LIGHT", 333, 164, C_LABEL)
-
-    # Controls panel – RUN TIMERS section
-    lcd.fill_rect(_PNL_C_X, 221, _PNL_C_W, 1, C_BORDER)
-    lcd.text("RUN TIMERS", 341, 229, C_LABEL)
+    # ── Controls panel ────────────────────────────────────────────────────────
+    lcd.text("PUMP 1", 357, 8, C_LABEL)
+    lcd.fill_rect(_PNL_C_X, 28,  _PNL_C_W, 1, C_BORDER)
+    lcd.fill_rect(_PNL_C_X, 72,  _PNL_C_W, 1, C_BORDER)
+    lcd.text("PUMP 2 / 3", 341, 80, C_LABEL)
+    lcd.fill_rect(_PNL_C_X, 128, _PNL_C_W, 1, C_BORDER)
+    lcd.text("HEAT / LIGHT", 333, 136, C_LABEL)
+    lcd.fill_rect(_PNL_C_X, 193, _PNL_C_W, 1, C_BORDER)
+    lcd.text("RUN TIMERS", 341, 201, C_LABEL)
 
 
 def _touch_point(touch):
@@ -722,7 +793,10 @@ def _touch_button_at(x, y):
 def _update_setpoint_display(lcd, ctrl):
     if lcd is None:
         return
-    _draw_temp_big(lcd, ctrl.temp_setpoint_f, _BIG_SP_X, _BIG_SP_Y, C_SP_ON, C_BG)
+    _draw_temp_int(lcd, ctrl.temp_setpoint_f, _BIG_SP_X, _BIG_SP_Y, _SP_SCALE, C_SP_ON, C_BG)
+    lcd.fill_rect(_SP_DEG_X, _BIG_SP_Y, 16, 10, C_BG)
+    lcd.text("oF", _SP_DEG_X, _BIG_SP_Y + 2, C_LABEL)
+    _draw_arc_slider(lcd, ctrl.temp_setpoint_f, C_BG)
 
 
 def _remaining_seconds(active, start_ms, duration_ms, now_ms):
@@ -761,7 +835,7 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
 
     repeat_ms = (
         TOUCH_SETPOINT_REPEAT_MS
-        if button in ("setpoint_minus", "setpoint_plus")
+        if button == "arc_slider"
         else TOUCH_REPEAT_MS
     )
     if button == ui_state.get("touch_button"):
@@ -795,24 +869,25 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
     elif button == "light":
         ui_state["xLightRequest"] = not ui_state["xLightRequest"]
         handled = True
-    elif button == "setpoint_minus":
-        new_setpoint_f = max(
-            UI_LIMITS["SETPOINT_MIN_F"],
-            ctrl.temp_setpoint_f - UI_LIMITS["SETPOINT_STEP_F"],
-        )
-        if new_setpoint_f != ctrl.temp_setpoint_f:
-            ctrl.temp_setpoint_f = new_setpoint_f
-            _update_setpoint_display(lcd, ctrl)
-            handled = True
-    elif button == "setpoint_plus":
-        new_setpoint_f = min(
-            UI_LIMITS["SETPOINT_MAX_F"],
-            ctrl.temp_setpoint_f + UI_LIMITS["SETPOINT_STEP_F"],
-        )
-        if new_setpoint_f != ctrl.temp_setpoint_f:
-            ctrl.temp_setpoint_f = new_setpoint_f
-            _update_setpoint_display(lcd, ctrl)
-            handled = True
+    elif button == "arc_slider":
+        # Convert touch position to setpoint via arc angle
+        dx    = x - _ARC_CX
+        dy_up = _ARC_CY - y          # positive in upper half of arc
+        if dy_up > 0:
+            dist2 = dx * dx + dy_up * dy_up
+            r_tol = _ARC_T + 22      # generous ring tolerance for finger touches
+            r_lo2 = (_ARC_R - r_tol) * (_ARC_R - r_tol)
+            r_hi2 = (_ARC_R + r_tol) * (_ARC_R + r_tol)
+            if r_lo2 <= dist2 <= r_hi2:
+                ang    = math.atan2(dy_up, dx)                   # 0..π upper half
+                norm   = max(0.0, min(1.0, (math.pi - ang) / math.pi))
+                new_sp = _ARC_MIN + norm * (_ARC_MAX - _ARC_MIN)
+                new_sp = float(int(new_sp + 0.5))                # round to °F
+                new_sp = max(_ARC_MIN, min(_ARC_MAX, new_sp))
+                if new_sp != ctrl.temp_setpoint_f:
+                    ctrl.temp_setpoint_f = new_sp
+                    _update_setpoint_display(lcd, ctrl)
+                    handled = True
 
     ui_state["last_touch_ms"] = now_ms
     if handled:
@@ -911,26 +986,32 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
     fault     = bool(outputs.get("xFault"))
     fc        = int(outputs.get("iFaultCode", 0))
 
-    # ── Temperature panel: big PV and SP displays ────────────────────────────
-    _draw_temp_big(lcd, inputs.get("rWaterTemp_F"), _BIG_TEMP_X, _BIG_TEMP_Y,
-                   C_SEG_ON, C_BG)
-    _draw_temp_big(lcd, ctrl.temp_setpoint_f, _BIG_SP_X, _BIG_SP_Y,
-                   C_SP_ON, C_BG)
+    # ── Temperature panel: main PV (water temp) ───────────────────────────────
+    _draw_temp_int(lcd, inputs.get("rWaterTemp_F"), _BIG_TEMP_X, _BIG_TEMP_Y,
+                   _TEMP_SCALE, C_SEG_ON, C_BG)
+    lcd.fill_rect(_TEMP_DEG_X, _BIG_TEMP_Y, 16, 10, C_BG)
+    lcd.text("oF", _TEMP_DEG_X, _BIG_TEMP_Y + 4, C_LABEL)
+
+    # ── Temperature panel: setpoint display and arc slider ────────────────────
+    _draw_temp_int(lcd, ctrl.temp_setpoint_f, _BIG_SP_X, _BIG_SP_Y,
+                   _SP_SCALE, C_SP_ON, C_BG)
+    lcd.fill_rect(_SP_DEG_X, _BIG_SP_Y, 16, 10, C_BG)
+    lcd.text("oF", _SP_DEG_X, _BIG_SP_Y + 2, C_LABEL)
+    _draw_arc_slider(lcd, ctrl.temp_setpoint_f, C_BG)
 
     # ── Status panel: LED indicators ─────────────────────────────────────────
     heat_led = C_LED_AM if heater_on else (C_LED_GN if heat_req else C_LED_OFF)
-    _draw_led(lcd, 10, 64, heat_led)
-    _draw_led(lcd, 10, 96,  C_LED_CY if pump_on   else C_LED_OFF)
-    _draw_led(lcd, 10, 128, C_LED_YE if light_req else C_LED_OFF)
-    _draw_led(lcd, 10, 160, C_FAULT  if fault     else C_LED_OFF)
+    _draw_led(lcd, 10, 36, heat_led)
+    _draw_led(lcd, 10, 68,  C_LED_CY if pump_on   else C_LED_OFF)
+    _draw_led(lcd, 10, 100, C_LED_YE if light_req else C_LED_OFF)
+    _draw_led(lcd, 10, 132, C_FAULT  if fault     else C_LED_OFF)
 
-    # Fault / heater status text
-    lcd.fill_rect(4, 180, 80, 10, C_PANEL)
-    lcd.text("FC:%d" % fc if fc else "OK", 4, 182,
-             C_FAULT if fault else C_LED_GN)
-    lcd.fill_rect(4, 198, 80, 10, C_PANEL)
-    lcd.text("HTR:%s" % ("ON" if heater_on else "OFF"), 4, 200,
-             C_LED_AM if heater_on else C_DIM)
+    # Fault code text — only shown when an active fault exists
+    if fault:
+        lcd.fill_rect(4, 152, 80, 10, C_PANEL)
+        lcd.text("FC:%d" % fc, 4, 154, C_FAULT)
+    else:
+        lcd.fill_rect(4, 152, 80, 10, C_PANEL)
 
     # ── Controls panel: PUMP 1 buttons ───────────────────────────────────────
     _draw_button_v2(lcd, UI_BUTTONS["pump_off"],  "OFF",
