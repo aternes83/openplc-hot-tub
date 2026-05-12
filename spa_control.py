@@ -207,22 +207,32 @@ class SpaController:
             self._light_timer_start_ms = None
             light_expired = False
 
-        x_permissive = (
-            x_spa_enable
-            and x_high_limit_ok
+        # ── Two-tier permissive ───────────────────────────────────────────────
+        # Freeze-protection permissive: safety interlocks only, NO run timer.
+        # This keeps the thermostat and its circulation pump alive indefinitely
+        # so the setpoint is always maintained (critical for winter freeze protection).
+        x_freeze_permissive = (
+            x_high_limit_ok
             and x_remote_estop_ok
             and (r_water_temp_f <= self.max_safe_temp_f)
         )
+        # Full permissive: additionally requires spa-enable + run timer not expired.
+        # Gates user-initiated jets, high-speed pump, blower, etc.
+        x_permissive = x_spa_enable and x_freeze_permissive
 
         # Auto-heat: activate whenever water is below setpoint.
         # x_heat_request is kept for compatibility but no longer gates this path.
         x_heat_active = r_water_temp_f < self.temp_setpoint_f
 
-        # Pump 1 two-speed interlock: high overrides low.
+        # Pump 1: heat-driven circulation uses freeze permissive (always on when
+        # needed); user-requested low/high speed requires full permissive.
         x_pump1_high = x_permissive and x_pump1_high_request
-        x_pump1_low = x_permissive and (x_pump_request or x_heat_active) and (not x_pump1_high)
+        x_pump1_low = (
+            (x_freeze_permissive and x_heat_active)   # thermostat circulation
+            or (x_permissive and x_pump_request)      # manual LOW request
+        ) and (not x_pump1_high)
 
-        # Single-speed pumps
+        # Single-speed pumps – require full permissive (user-initiated only).
         x_pump2 = x_permissive and x_pump2_request
         x_pump3 = x_permissive and x_pump3_request
         x_any_pump = x_pump1_low or x_pump1_high or x_pump2 or x_pump3
@@ -231,7 +241,7 @@ class SpaController:
         min_run_elapsed = self._pump_min_run.update(x_any_pump)
 
         x_heater = self._thermostat.update(
-            enable=(x_permissive and x_heat_active),
+            enable=(x_freeze_permissive and x_heat_active),
             temp_f=r_water_temp_f,
             setpoint_f=self.temp_setpoint_f,
             hysteresis_f=self.temp_hysteresis_f,
