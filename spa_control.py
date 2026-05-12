@@ -759,10 +759,10 @@ def _draw_static_frame(lcd):
     _draw_round_btn(lcd, 152, 208, 120, 58, 14, "+")
 
     # ── Controls panel ────────────────────────────────────────────────────────
-    lcd.text("PUMP 1",      357, 8,   C_LABEL)
+    lcd.text("JET 1",       357, 8,   C_LABEL)
     lcd.fill_rect(_PNL_C_X, 28,  _PNL_C_W, 1, C_BORDER)
     lcd.fill_rect(_PNL_C_X, 72,  _PNL_C_W, 1, C_BORDER)
-    lcd.text("PUMP 2 / 3",  341, 80,  C_LABEL)
+    lcd.text("JET 2 / 3",   341, 80,  C_LABEL)
     lcd.fill_rect(_PNL_C_X, 128, _PNL_C_W, 1, C_BORDER)
     lcd.text("HEAT / LIGHT", 333, 136, C_LABEL)
 
@@ -771,7 +771,7 @@ def _draw_static_frame(lcd):
     # Each item: [12-px LED] [4-px gap] [label]  — labels are static chrome.
     _sb_ty = _STATUS_BAR_Y + (_STATUS_BAR_H - 8) // 2
     lcd.text("HEAT",  52,  _sb_ty, C_LABEL)
-    lcd.text("PUMP",  172, _sb_ty, C_LABEL)
+    lcd.text("JETS",  172, _sb_ty, C_LABEL)
     lcd.text("LITE",  292, _sb_ty, C_LABEL)
     lcd.text("FAULT", 408, _sb_ty, C_LABEL)
 
@@ -1103,9 +1103,9 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
                         active=(pump_mode == 1), act_color=C_BTN_P_AC)
         _draw_button_v2(lcd, UI_BUTTONS["pump_high"], "HI",
                         active=(pump_mode == 2), act_color=C_BTN_P_AC)
-        _draw_button_v2(lcd, UI_BUTTONS["pump2"], "PUMP 2",
+        _draw_button_v2(lcd, UI_BUTTONS["pump2"], "JET 2",
                         active=pump2_on, act_color=C_BTN_P_AC)
-        _draw_button_v2(lcd, UI_BUTTONS["pump3"], "PUMP 3",
+        _draw_button_v2(lcd, UI_BUTTONS["pump3"], "JET 3",
                         active=pump3_on, act_color=C_BTN_P_AC)
         _draw_button_v2(lcd, UI_BUTTONS["heat"],  "HEAT",
                         active=heat_req,  act_color=C_BTN_H_AC)
