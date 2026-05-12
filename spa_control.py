@@ -931,8 +931,9 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
     handled = False
     if button == "pump_off":
         # Block OFF when the heater requires water flow for safe operation.
-        wt = ui_state.get("_water_temp_f", 999.0)
-        heat_needs_pump = wt < ctrl.temp_setpoint_f
+        wt    = ui_state.get("_water_temp_f", 999.0)
+        sp_lo = ctrl.temp_setpoint_f - ctrl.temp_hysteresis_f * 0.5
+        heat_needs_pump = wt < sp_lo   # matches thermostat turn-on threshold
         if not heat_needs_pump and ui_state["pump1_mode"] != 0:
             ui_state["pump1_mode"] = 0
             handled = True
