@@ -347,12 +347,15 @@ C_BTN_L_AC = 0x4420   # light active (dark yellow-green)
 C_ACCENT   = 0x8410   # button-border accent – medium grey
 C_FAULT    = 0xF800   # fault red
 
-# ── Panel geometry (landscape 480 × 320, no title bar) ───────────────────────
+# ── Panel geometry (landscape 480 × 320) ─────────────────────────────────────
+# Status indicators moved to a horizontal bar at the bottom of the screen.
+# Temperature panel now spans the full left area (0–282 px) for larger digits.
+_STATUS_BAR_H = 45           # bottom status-bar height
+_STATUS_BAR_Y = 275          # y-start of status bar (320 – 45)
 _PNL_Y = 0
-_PNL_H = 320
-_PNL_S_X, _PNL_S_W = 0,   88    # status panel
-_PNL_T_X, _PNL_T_W = 88,  194   # temperature panel
-_PNL_C_X, _PNL_C_W = 282, 198   # controls panel
+_PNL_H = _STATUS_BAR_Y      # main panel area height (275 px)
+_PNL_T_X, _PNL_T_W = 0,   282   # temperature panel (full left area)
+_PNL_C_X, _PNL_C_W = 282, 198   # controls panel (unchanged)
 
 # ── 7-segment digit renderer ─────────────────────────────────────────────────
 # Each digit drawn as smooth hexagonal-ended segments (angled tips, like a real
@@ -362,18 +365,19 @@ _PNL_C_X, _PNL_C_W = 282, 198   # controls panel
 #                   bit3=d(bot) bit4=e(bot-left)  bit5=f(top-left) bit6=g(mid)
 _SEG7 = (0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F)
 
-_TEMP_SCALE = 8    # size unit – main temp display  (digit bounding box: 40 × 56 px)
-_SP_SCALE   = 6    # size unit – setpoint display   (digit bounding box: 30 × 42 px)
+# Temperature panel now 282 px wide – scale up both digit sizes.
+_TEMP_SCALE = 11   # size unit – main temp display  (digit bounding box: 55 × 77 px)
+_SP_SCALE   = 8    # size unit – setpoint display   (digit bounding box: 40 × 56 px)
 
-# Pre-computed strip origins (centred in the 194-px temperature panel)
-_TEMP_PITCH = 5 * _TEMP_SCALE + max(1, _TEMP_SCALE // 2)   # 44
-_SP_PITCH   = 5 * _SP_SCALE   + max(1, _SP_SCALE   // 2)   # 33
-_BIG_TEMP_X = _PNL_T_X + (_PNL_T_W - 2*_TEMP_PITCH - 5*_TEMP_SCALE) // 2  # 121
-_BIG_TEMP_Y = 36
-_BIG_SP_X   = _PNL_T_X + (_PNL_T_W - 2*_SP_PITCH - 5*_SP_SCALE) // 2      # 137
-_BIG_SP_Y   = 128
-_TEMP_DEG_X = _BIG_TEMP_X + 2*_TEMP_PITCH + 5*_TEMP_SCALE + 4   # x for "oF" unit
-_SP_DEG_X   = _BIG_SP_X   + 2*_SP_PITCH   + 5*_SP_SCALE   + 3
+# Pre-computed strip origins (centred in the 282-px temperature panel)
+_TEMP_PITCH = 5 * _TEMP_SCALE + max(1, _TEMP_SCALE // 2)   # 60
+_SP_PITCH   = 5 * _SP_SCALE   + max(1, _SP_SCALE   // 2)   # 44
+_BIG_TEMP_X = _PNL_T_X + (_PNL_T_W - 2*_TEMP_PITCH - 5*_TEMP_SCALE) // 2  # 53
+_BIG_TEMP_Y = 26
+_BIG_SP_X   = _PNL_T_X + (_PNL_T_W - 2*_SP_PITCH - 5*_SP_SCALE) // 2      # 77
+_BIG_SP_Y   = 136
+_TEMP_DEG_X = _BIG_TEMP_X + 2*_TEMP_PITCH + 5*_TEMP_SCALE + 4   # 232
+_SP_DEG_X   = _BIG_SP_X   + 2*_SP_PITCH   + 5*_SP_SCALE   + 3   # 208
 
 UI_LIMITS = {
     "SETPOINT_MIN_F": 80.0,
@@ -389,9 +393,9 @@ TIMER_LIGHT_POS   = (0, 0)
 # ── Touch button rects (x, y, w, h) ──────────────────────────────────────────
 # Controls-panel y-values shifted up 28 px (title bar removed).
 UI_BUTTONS = {
-    # Temperature panel – setpoint adjust
-    "setpoint_minus": (98,  183, 78, 48),
-    "setpoint_plus":  (194, 183, 78, 48),
+    # Temperature panel – setpoint adjust (wider, repositioned for new layout)
+    "setpoint_minus": (6,   208, 134, 56),
+    "setpoint_plus":  (142, 208, 134, 56),
     # Controls panel – PUMP 1 (three-state)
     "pump_off":  (286, 36, 58, 32),
     "pump_low":  (350, 36, 58, 32),
@@ -626,42 +630,49 @@ def _draw_button_v2(lcd, rect, label, active=False, act_color=0x0492):
 
 def _draw_static_frame(lcd):
     """
-    Paint all fixed chrome once.  No title bar — panels span the full 320 px.
-    No run-timers section.  Dynamic fields are layered on top.
+    Paint all fixed chrome once.
+    Layout: temperature panel (left 282 px, 275 px tall) |
+            controls panel (right 198 px, 275 px tall) |
+            horizontal status bar (full width, bottom 45 px).
     """
-    # Panel fills
-    lcd.fill_rect(_PNL_S_X, 0, _PNL_S_W, _PNL_H, C_PANEL)
+    # ── Panel fills ───────────────────────────────────────────────────────────
     lcd.fill_rect(_PNL_T_X, 0, _PNL_T_W, _PNL_H, C_BG)
     lcd.fill_rect(_PNL_C_X, 0, _PNL_C_W, _PNL_H, C_PANEL)
+    lcd.fill_rect(0, _STATUS_BAR_Y, 480, _STATUS_BAR_H, C_PANEL)
 
-    # Vertical panel dividers
-    lcd.fill_rect(_PNL_S_X + _PNL_S_W, 0, 2, _PNL_H, C_BORDER)
-    lcd.fill_rect(_PNL_T_X + _PNL_T_W, 0, 2, _PNL_H, C_BORDER)
-
-    # ── Status panel ─────────────────────────────────────────────────────────
-    lcd.text("STATUS", 20, 8, C_LABEL)
-    lcd.fill_rect(0, 28, _PNL_S_W, 1, C_BORDER)
-    lcd.text("HEAT",  26, 40,  C_LABEL)
-    lcd.text("PUMP",  26, 72,  C_LABEL)
-    lcd.text("LITE",  26, 104, C_LABEL)
-    lcd.text("FAULT", 26, 136, C_LABEL)
+    # ── Dividers ──────────────────────────────────────────────────────────────
+    lcd.fill_rect(_PNL_T_X + _PNL_T_W, 0, 2, _PNL_H, C_BORDER)  # temp | controls
+    lcd.fill_rect(0, _STATUS_BAR_Y, 480, 1, C_BORDER)             # main | status bar
 
     # ── Temperature panel ─────────────────────────────────────────────────────
-    lcd.text("WATER TEMP", 145, 8, C_LABEL)
-    lcd.fill_rect(_PNL_T_X, 28,  _PNL_T_W, 1, C_BORDER)   # below section label
-    lcd.fill_rect(_PNL_T_X, 108, _PNL_T_W, 1, C_BORDER)   # between temp and SP
-    lcd.text("TARGET TEMP", 141, 116, C_LABEL)
-    lcd.fill_rect(_PNL_T_X, 174, _PNL_T_W, 1, C_BORDER)   # above +/- buttons
+    _tw = _PNL_T_W
+    lcd.text("WATER TEMP", (_tw - 10 * 8) // 2, 8, C_LABEL)
+    lcd.fill_rect(_PNL_T_X, 22,  _tw, 1, C_BORDER)   # below label
+    # [big temp digits occupy y = 26 … 102]
+    lcd.fill_rect(_PNL_T_X, 108, _tw, 1, C_BORDER)   # between water and target
+    lcd.text("TARGET TEMP", (_tw - 11 * 8) // 2, 114, C_LABEL)
+    lcd.fill_rect(_PNL_T_X, 130, _tw, 1, C_BORDER)   # below label
+    # [setpoint digits occupy y = 136 … 191]
+    lcd.fill_rect(_PNL_T_X, 200, _tw, 1, C_BORDER)   # above +/- buttons
     _draw_button_v2(lcd, UI_BUTTONS["setpoint_minus"], "  -  ")
     _draw_button_v2(lcd, UI_BUTTONS["setpoint_plus"],  "  +  ")
 
     # ── Controls panel ────────────────────────────────────────────────────────
-    lcd.text("PUMP 1", 357, 8, C_LABEL)
+    lcd.text("PUMP 1",      357, 8,   C_LABEL)
     lcd.fill_rect(_PNL_C_X, 28,  _PNL_C_W, 1, C_BORDER)
     lcd.fill_rect(_PNL_C_X, 72,  _PNL_C_W, 1, C_BORDER)
-    lcd.text("PUMP 2 / 3", 341, 80, C_LABEL)
+    lcd.text("PUMP 2 / 3",  341, 80,  C_LABEL)
     lcd.fill_rect(_PNL_C_X, 128, _PNL_C_W, 1, C_BORDER)
     lcd.text("HEAT / LIGHT", 333, 136, C_LABEL)
+
+    # ── Status bar (bottom horizontal strip) ──────────────────────────────────
+    # Four items evenly spaced in 120-px slots (slot centres: 60, 180, 300, 420)
+    # Each item: [12-px LED] [4-px gap] [label]  — labels are static chrome.
+    _sb_ty = _STATUS_BAR_Y + (_STATUS_BAR_H - 8) // 2
+    lcd.text("HEAT",  52,  _sb_ty, C_LABEL)
+    lcd.text("PUMP",  172, _sb_ty, C_LABEL)
+    lcd.text("LITE",  292, _sb_ty, C_LABEL)
+    lcd.text("FAULT", 408, _sb_ty, C_LABEL)
 
 
 def _touch_point(touch):
@@ -732,7 +743,7 @@ def _update_setpoint_display(lcd, ctrl):
     if lcd is None:
         return
     _draw_temp_int(lcd, ctrl.temp_setpoint_f, _BIG_SP_X, _BIG_SP_Y, _SP_SCALE, C_SP_ON, C_BG)
-    lcd.fill_rect(_SP_DEG_X, _BIG_SP_Y, 16, 10, C_BG)
+    lcd.fill_rect(_SP_DEG_X, _BIG_SP_Y, 20, 12, C_BG)
     lcd.text("oF", _SP_DEG_X, _BIG_SP_Y + 2, C_LABEL)
 
 
@@ -933,19 +944,24 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
     lcd.fill_rect(_SP_DEG_X, _BIG_SP_Y, 16, 10, C_BG)
     lcd.text("oF", _SP_DEG_X, _BIG_SP_Y + 2, C_LABEL)
 
-    # ── Status panel: LED indicators (y-coords shifted up 28 px, no title bar)
+    # ── Status bar LEDs (bottom horizontal strip) ────────────────────────────
+    # Slot centres at x = 60, 180, 300, 420 (120-px slots).
+    # LED top-left offset: centre – (12+4+label_w)//2
+    _sb_led_y = _STATUS_BAR_Y + (_STATUS_BAR_H - 12) // 2   # vertically centred
     heat_led = C_LED_AM if heater_on else (C_LED_GN if heat_req else C_LED_OFF)
-    _draw_led(lcd, 10, 36, heat_led)
-    _draw_led(lcd, 10, 68,  C_LED_CY if pump_on   else C_LED_OFF)
-    _draw_led(lcd, 10, 100, C_LED_YE if light_req else C_LED_OFF)
-    _draw_led(lcd, 10, 132, C_FAULT  if fault     else C_LED_OFF)
+    _draw_led(lcd,  36, _sb_led_y, heat_led)
+    _draw_led(lcd, 156, _sb_led_y, C_LED_CY if pump_on   else C_LED_OFF)
+    _draw_led(lcd, 276, _sb_led_y, C_LED_YE if light_req else C_LED_OFF)
+    _draw_led(lcd, 392, _sb_led_y, C_FAULT  if fault     else C_LED_OFF)
 
-    # Fault code – only shown when a fault is active
+    # Fault code – replaces "FAULT" label text when active
+    _sb_ty = _STATUS_BAR_Y + (_STATUS_BAR_H - 8) // 2
     if fault:
-        lcd.fill_rect(4, 152, 80, 10, C_PANEL)
-        lcd.text("FC:%d" % fc, 4, 154, C_FAULT)
+        lcd.fill_rect(408, _sb_ty - 1, 56, 10, C_PANEL)
+        lcd.text("FC:%d" % fc, 408, _sb_ty, C_FAULT)
     else:
-        lcd.fill_rect(4, 152, 80, 10, C_PANEL)
+        lcd.fill_rect(408, _sb_ty - 1, 56, 10, C_PANEL)
+        lcd.text("FAULT", 408, _sb_ty, C_LABEL)
 
     # ── Controls panel: PUMP 1 buttons ───────────────────────────────────────
     _draw_button_v2(lcd, UI_BUTTONS["pump_off"],  "OFF",
