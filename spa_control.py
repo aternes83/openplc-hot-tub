@@ -1016,7 +1016,8 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
         if pct != ui_state.get("bl_brightness", BL_FULL_DUTY):
             ui_state["bl_brightness"] = pct
             _set_backlight(pct)
-            ui_state.pop("_c_top", None)   # force slider redraw
+            ui_state.pop("_c_top", None)        # force top bar redraw
+            ui_state["_dynamic_key"] = None     # force render on next loop tick
         ui_state["_last_any_touch_ms"] = now_ms
         ctrl._run_timer_start_ms = None
         ui_state["last_touch_ms"] = now_ms
@@ -1195,6 +1196,7 @@ def _dynamic_snapshot(inputs, outputs, ctrl, ui_state):
         int(bool(outputs.get("xPump3"))),
         int(outputs.get("iFaultCode", 0)),
         bool(outputs.get("xFault")),
+        int(ui_state.get("bl_brightness", BL_FULL_DUTY)),
     )
 
 
