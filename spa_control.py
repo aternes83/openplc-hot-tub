@@ -401,12 +401,14 @@ C_ACCENT   = 0x8410   # button-border accent – medium grey
 C_FAULT    = 0xF800   # fault red
 
 # ── Panel geometry (landscape 480 × 320) ─────────────────────────────────────
-# Status indicators moved to a horizontal bar at the bottom of the screen.
-# Temperature panel now spans the full left area (0–282 px) for larger digits.
+# Top bar: connectivity icons + clock (right-aligned).
+# Status indicators: horizontal bar at the bottom.
+# Temperature panel: full left area (0–282 px) for large digits.
+_TOP_BAR_H    = 22           # top status bar height (BT / WiFi / time)
 _STATUS_BAR_H = 45           # bottom status-bar height
-_STATUS_BAR_Y = 275          # y-start of status bar (320 – 45)
-_PNL_Y = 0
-_PNL_H = _STATUS_BAR_Y      # main panel area height (275 px)
+_STATUS_BAR_Y = 275          # y-start of bottom status bar (320 – 45)
+_PNL_Y = _TOP_BAR_H          # main panels start below the top bar
+_PNL_H = _STATUS_BAR_Y - _TOP_BAR_H   # main panel area height (253 px)
 _PNL_T_X, _PNL_T_W = 0,   282   # temperature panel (full left area)
 _PNL_C_X, _PNL_C_W = 282, 198   # controls panel (unchanged)
 
@@ -426,9 +428,9 @@ _SP_SCALE   = 8    # size unit – setpoint display   (digit bounding box: 40 ×
 _TEMP_PITCH = 5 * _TEMP_SCALE + max(1, _TEMP_SCALE // 2)   # 60
 _SP_PITCH   = 5 * _SP_SCALE   + max(1, _SP_SCALE   // 2)   # 44
 _BIG_TEMP_X = _PNL_T_X + (_PNL_T_W - 2*_TEMP_PITCH - 5*_TEMP_SCALE) // 2  # 53
-_BIG_TEMP_Y = 26
+_BIG_TEMP_Y = 26 + _TOP_BAR_H   # 48
 _BIG_SP_X   = _PNL_T_X + (_PNL_T_W - 2*_SP_PITCH - 5*_SP_SCALE) // 2      # 77
-_BIG_SP_Y   = 136
+_BIG_SP_Y   = 136 + _TOP_BAR_H  # 158
 _TEMP_DEG_X = _BIG_TEMP_X + 2*_TEMP_PITCH + 5*_TEMP_SCALE + 4   # 232
 _SP_DEG_X   = _BIG_SP_X   + 2*_SP_PITCH   + 5*_SP_SCALE   + 3   # 208
 
@@ -450,21 +452,21 @@ TIMER_LIGHT_POS   = (0, 0)
 # ── Touch button rects (x, y, w, h) ──────────────────────────────────────────
 # Controls-panel y-values shifted up 28 px (title bar removed).
 UI_BUTTONS = {
-    # Temperature panel – rounded-rect buttons W=120 H=58 r=14
-    "setpoint_minus": (10,  208, 120, 58),
-    "setpoint_plus":  (152, 208, 120, 58),
-    # Controls panel – PUMP 1 (three-state)
-    "pump_off":  (286, 36, 58, 32),
-    "pump_low":  (350, 36, 58, 32),
-    "pump_high": (414, 36, 56, 32),
-    # Controls panel – PUMP 2 & 3 (toggles)
-    "pump2": (286, 92, 89, 32),
-    "pump3": (383, 92, 89, 32),
+    # Temperature panel – rounded-rect setpoint buttons (y shifted by _TOP_BAR_H)
+    "setpoint_minus": (10,  230, 120, 44),
+    "setpoint_plus":  (152, 230, 120, 44),
+    # Controls panel – JET 1 (three-state)
+    "pump_off":  (286, 58, 58, 32),
+    "pump_low":  (350, 58, 58, 32),
+    "pump_high": (414, 58, 56, 32),
+    # Controls panel – JET 2 & 3 (toggles)
+    "pump2": (286, 114, 89, 32),
+    "pump3": (383, 114, 89, 32),
     # Controls panel – light (full-width, spans former heat+light row)
-    "light": (286, 145, 186, 44),
+    "light": (286, 167, 186, 44),
     # Controls panel – operating modes
-    "eco":     (286, 208, 89, 44),
-    "max_jet": (383, 208, 89, 44),
+    "eco":     (286, 230, 89, 44),
+    "max_jet": (383, 230, 89, 44),
 }
 
 TOUCH_BUTTON_ORDER = (
@@ -739,49 +741,96 @@ def _draw_button_v2(lcd, rect, label, active=False, act_color=0x0492):
     lcd.text(label, lx, ly, C_TEXT)
 
 
+def _get_time_str():
+    """Return current RTC time as 'HH:MM', or '--:--' if unavailable."""
+    try:
+        from machine import RTC
+        dt = RTC().datetime()   # (year, month, day, weekday, hours, mins, secs, sub)
+        return "%02d:%02d" % (dt[4], dt[5])
+    except Exception:
+        return "--:--"
+
+
+def _draw_wifi_icon(lcd, x, y, color):
+    """
+    Draw a 3-bar ascending WiFi / signal-strength icon (11 × 10 px).
+    Bars are 3 px wide with 1-px gaps; heights 4, 7, 10 px (tallest on right).
+    x, y = top-left corner of the icon bounding box.
+    """
+    lcd.fill_rect(x,      y + 6, 3, 4,  color)   # short  bar (left)
+    lcd.fill_rect(x + 4,  y + 3, 3, 7,  color)   # medium bar (centre)
+    lcd.fill_rect(x + 8,  y,     3, 10, color)   # tall   bar (right)
+
+
+def _draw_bt_icon(lcd, x, y, color):
+    """
+    Minimal 8 × 10 px Bluetooth glyph using fill_rect.
+    Resembles the classic ᛒ shape: vertical spine with two V-chevrons.
+    x, y = top-left corner.
+    """
+    # Vertical spine
+    lcd.fill_rect(x + 3, y,     2, 10, color)
+    # Upper-right diagonal  (\)
+    lcd.fill_rect(x + 5, y + 1, 2, 2,  color)
+    lcd.fill_rect(x + 6, y + 3, 2, 2,  color)
+    # Upper-left  return   (/)
+    lcd.fill_rect(x + 1, y + 3, 2, 2,  color)
+    lcd.fill_rect(x,     y + 1, 2, 2,  color)
+    # Lower-right diagonal (\)
+    lcd.fill_rect(x + 5, y + 6, 2, 2,  color)
+    lcd.fill_rect(x + 6, y + 8, 2, 2,  color)
+    # Lower-left  return   (/)
+    lcd.fill_rect(x + 1, y + 6, 2, 2,  color)
+    lcd.fill_rect(x,     y + 8, 2, 2,  color)
+
+
 def _draw_static_frame(lcd):
     """
     Paint all fixed chrome once.
-    Layout: temperature panel (left 282 px, 275 px tall) |
-            controls panel (right 198 px, 275 px tall) |
+    Layout: top bar (full width, 22 px – BT/WiFi/time) |
+            temperature panel (left 282 px) | controls panel (right 198 px) |
             horizontal status bar (full width, bottom 45 px).
     """
-    # ── Panel fills ───────────────────────────────────────────────────────────
-    lcd.fill_rect(_PNL_T_X, 0, _PNL_T_W, _PNL_H, C_BG)
-    lcd.fill_rect(_PNL_C_X, 0, _PNL_C_W, _PNL_H, C_PANEL)
+    T = _TOP_BAR_H   # shorthand
+
+    # ── Top status bar ────────────────────────────────────────────────────────
+    lcd.fill_rect(0, 0, 480, T, C_PANEL)
+    lcd.fill_rect(0, T - 1, 480, 1, C_BORDER)
+
+    # ── Panel fills (below top bar) ───────────────────────────────────────────
+    lcd.fill_rect(_PNL_T_X, T, _PNL_T_W, _PNL_H, C_BG)
+    lcd.fill_rect(_PNL_C_X, T, _PNL_C_W, _PNL_H, C_PANEL)
     lcd.fill_rect(0, _STATUS_BAR_Y, 480, _STATUS_BAR_H, C_PANEL)
 
     # ── Dividers ──────────────────────────────────────────────────────────────
-    lcd.fill_rect(_PNL_T_X + _PNL_T_W, 0, 2, _PNL_H, C_BORDER)  # temp | controls
+    lcd.fill_rect(_PNL_T_X + _PNL_T_W, T, 2, _PNL_H, C_BORDER)  # temp | controls
     lcd.fill_rect(0, _STATUS_BAR_Y, 480, 1, C_BORDER)             # main | status bar
 
     # ── Temperature panel ─────────────────────────────────────────────────────
     _tw = _PNL_T_W
-    lcd.text("WATER TEMP", (_tw - 10 * 8) // 2, 8, C_LABEL)
-    lcd.fill_rect(_PNL_T_X, 22,  _tw, 1, C_BORDER)   # below label
-    # [big temp digits occupy y = 26 … 102]
-    lcd.fill_rect(_PNL_T_X, 108, _tw, 1, C_BORDER)   # between water and target
-    lcd.text("TARGET TEMP", (_tw - 11 * 8) // 2, 114, C_LABEL)
-    lcd.fill_rect(_PNL_T_X, 130, _tw, 1, C_BORDER)   # below label
-    # [setpoint digits occupy y = 136 … 191]
-    lcd.fill_rect(_PNL_T_X, 200, _tw, 1, C_BORDER)   # above +/- buttons
-    # Rounded-rectangle setpoint buttons: W=120 H=58 corner-r=14
-    _draw_round_btn(lcd, 10,  208, 120, 58, 14, "-")
-    _draw_round_btn(lcd, 152, 208, 120, 58, 14, "+")
+    lcd.text("WATER TEMP", (_tw - 10 * 8) // 2, T + 8,  C_LABEL)
+    lcd.fill_rect(_PNL_T_X, T + 22,  _tw, 1, C_BORDER)  # below label
+    # [big temp digits: _BIG_TEMP_Y … _BIG_TEMP_Y+77]
+    lcd.fill_rect(_PNL_T_X, T + 108, _tw, 1, C_BORDER)  # between water and target
+    lcd.text("TARGET TEMP", (_tw - 11 * 8) // 2, T + 114, C_LABEL)
+    lcd.fill_rect(_PNL_T_X, T + 130, _tw, 1, C_BORDER)  # below label
+    # [setpoint digits: _BIG_SP_Y … _BIG_SP_Y+56]
+    lcd.fill_rect(_PNL_T_X, T + 200, _tw, 1, C_BORDER)  # above +/- buttons
+    # Rounded-rectangle setpoint buttons: W=120 H=44 corner-r=12
+    _draw_round_btn(lcd, 10,  T + 208, 120, 44, 12, "-")
+    _draw_round_btn(lcd, 152, T + 208, 120, 44, 12, "+")
 
     # ── Controls panel ────────────────────────────────────────────────────────
-    lcd.text("JET 1",       357, 8,   C_LABEL)
-    lcd.fill_rect(_PNL_C_X, 28,  _PNL_C_W, 1, C_BORDER)
-    lcd.fill_rect(_PNL_C_X, 72,  _PNL_C_W, 1, C_BORDER)
-    lcd.text("JET 2 / 3",   341, 80,  C_LABEL)
-    lcd.fill_rect(_PNL_C_X, 128, _PNL_C_W, 1, C_BORDER)
-    lcd.text("LIGHT",        361, 136, C_LABEL)
-    lcd.fill_rect(_PNL_C_X, 192, _PNL_C_W, 1, C_BORDER)
-    lcd.text("MODES",        361, 196, C_LABEL)
+    lcd.text("JET 1",     357, T + 8,   C_LABEL)
+    lcd.fill_rect(_PNL_C_X, T + 28,  _PNL_C_W, 1, C_BORDER)
+    lcd.fill_rect(_PNL_C_X, T + 72,  _PNL_C_W, 1, C_BORDER)
+    lcd.text("JET 2 / 3", 341, T + 80,  C_LABEL)
+    lcd.fill_rect(_PNL_C_X, T + 128, _PNL_C_W, 1, C_BORDER)
+    lcd.text("LIGHT",     361, T + 136, C_LABEL)
+    lcd.fill_rect(_PNL_C_X, T + 192, _PNL_C_W, 1, C_BORDER)
+    lcd.text("MODES",     361, T + 196, C_LABEL)
 
-    # ── Status bar (bottom horizontal strip) ──────────────────────────────────
-    # Four items evenly spaced in 120-px slots (slot centres: 60, 180, 300, 420)
-    # Each item: [12-px LED] [4-px gap] [label]  — labels are static chrome.
+    # ── Bottom status bar ─────────────────────────────────────────────────────
     _sb_ty = _STATUS_BAR_Y + (_STATUS_BAR_H - 8) // 2
     lcd.text("HEAT",  52,  _sb_ty, C_LABEL)
     lcd.text("JETS",  172, _sb_ty, C_LABEL)
@@ -1109,6 +1158,24 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
     if lcd is None:
         return
 
+    # ── Top bar: BT icon, WiFi icon, clock (right-aligned, cached per minute) ─
+    bt_con   = bool(ui_state.get("bt_connected",   False))
+    wifi_con = bool(ui_state.get("wifi_connected", False))
+    time_str = _get_time_str()
+    top_key  = (bt_con, wifi_con, time_str)
+    if top_key != ui_state.get("_c_top"):
+        ui_state["_c_top"] = top_key
+        ty = (_TOP_BAR_H - 10) // 2   # icon top (10-px tall icons)
+        tt = (_TOP_BAR_H - 8)  // 2   # text top  (8-px tall font)
+        # Clear the right-hand portion of the top bar
+        lcd.fill_rect(370, 0, 106, _TOP_BAR_H - 1, C_PANEL)
+        # BT icon (8×10 px) at x=376
+        _draw_bt_icon(lcd, 376, ty, C_LED_CY if bt_con else C_ACCENT)
+        # WiFi bars (11×10 px) at x=392
+        _draw_wifi_icon(lcd, 392, ty, C_LED_GN if wifi_con else C_ACCENT)
+        # Time "HH:MM" at x=410
+        lcd.text(time_str, 410, tt, C_TEXT if time_str != "--:--" else C_ACCENT)
+
     heat_req  = ui_state["xHeatRequest"]
     light_req = ui_state["xLightRequest"]
     pump_mode = ui_state["pump1_mode"]
@@ -1213,7 +1280,7 @@ def render_hmi(lcd, inputs, outputs, ctrl, ui_state, full=False):
             _draw_static_frame(lcd)
             ui_state["_hmi_initialized"] = True
             # Force all dynamic regions to repaint after a full wipe
-            for k in ("_c_wt", "_c_sp", "_c_led", "_c_btn"):
+            for k in ("_c_wt", "_c_sp", "_c_led", "_c_btn", "_c_top"):
                 ui_state.pop(k, None)
         _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state)
         if hasattr(lcd, "show"):
@@ -1284,6 +1351,9 @@ def main(loop_ms=CONTROL_LOOP_MS):
         "_hmi_initialized": False,
         "_dynamic_key": None,
         "_timer_key": None,
+        # Top-bar connectivity state (set True when app integration is active)
+        "bt_connected":   False,
+        "wifi_connected": False,
     }
     raw_inputs = read_inputs()
     raw_inputs["rWaterTemp_F"] = temp_avg.update(raw_inputs.get("rWaterTemp_F", 0.0))
