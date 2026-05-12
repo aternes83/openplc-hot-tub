@@ -354,23 +354,16 @@ _PNL_S_X, _PNL_S_W = 0,   88    # status panel
 _PNL_T_X, _PNL_T_W = 88,  194   # temperature panel
 _PNL_C_X, _PNL_C_W = 282, 198   # controls panel
 
-# ── Modern 5 × 7 pixel font for temperature numerals ─────────────────────────
-# Each row: 5 bits, bit4=leftmost column, bit0=rightmost column.
-_FONT5X7 = (
-    (14, 17, 17, 17, 17, 17, 14),  # 0
-    ( 4, 12,  4,  4,  4,  4, 14),  # 1
-    (14, 17,  1,  6,  8, 16, 31),  # 2
-    (14, 17,  1,  6,  1, 17, 14),  # 3
-    ( 6, 10, 18, 31,  2,  2,  2),  # 4
-    (31, 16, 30,  1,  1, 17, 14),  # 5
-    (14, 16, 16, 30, 17, 17, 14),  # 6
-    (31,  1,  2,  4,  8,  8,  8),  # 7
-    (14, 17, 17, 14, 17, 17, 14),  # 8
-    (14, 17, 17, 15,  1,  1, 14),  # 9
-)
+# ── 7-segment digit renderer ─────────────────────────────────────────────────
+# Each digit drawn as smooth hexagonal-ended segments (angled tips, like a real
+# digital display) rather than scaled bitmap pixels.
+#
+# Segment encoding: bit0=a(top) bit1=b(top-right) bit2=c(bot-right)
+#                   bit3=d(bot) bit4=e(bot-left)  bit5=f(top-left) bit6=g(mid)
+_SEG7 = (0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F)
 
-_TEMP_SCALE = 8    # px/pixel – main temp display  (digit: 40 × 56 px)
-_SP_SCALE   = 6    # px/pixel – setpoint display   (digit: 30 × 42 px)
+_TEMP_SCALE = 8    # size unit – main temp display  (digit bounding box: 40 × 56 px)
+_SP_SCALE   = 6    # size unit – setpoint display   (digit bounding box: 30 × 42 px)
 
 # Pre-computed strip origins (centred in the 194-px temperature panel)
 _TEMP_PITCH = 5 * _TEMP_SCALE + max(1, _TEMP_SCALE // 2)   # 44
@@ -535,39 +528,63 @@ def init_hmi():
 
 # ── Modern 5 × 7 pixel-font helpers ──────────────────────────────────────────
 
-def _draw_digit_5x7(lcd, d, x, y, s, fg, bg):
-    """
-    Draw digit d (0-9) using _FONT5X7 at scale s.
-    Paints a 5s × 7s region; clears background automatically.
-    """
-    lcd.fill_rect(x, y, s * 5, s * 7, bg)
+def _fill_h_seg(lcd, x, y, w, t, d, color):
+    """Horizontal 7-segment element with hexagonal (angled) ends."""
+    for dy in range(t):
+        ind = max(0, d - min(dy, t - 1 - dy))
+        sw = w - ind * 2
+        if sw > 0:
+            lcd.fill_rect(x + ind, y + dy, sw, 1, color)
+
+
+def _fill_v_seg(lcd, x, y, h, t, d, color):
+    """Vertical 7-segment element with hexagonal (angled) ends."""
+    for dy in range(h):
+        ind = max(0, d - min(dy, h - 1 - dy))
+        sw = t - ind * 2
+        if sw > 0:
+            lcd.fill_rect(x + ind, y + dy, sw, 1, color)
+
+
+def _draw_digit_7seg(lcd, d, x, y, W, H, fg, bg):
+    """Draw a single 7-segment digit in a W×H bounding box at (x, y)."""
+    lcd.fill_rect(x, y, W, H, bg)
     if not (0 <= d <= 9):
         return
-    rows = _FONT5X7[d]
-    for row in range(7):
-        bits = rows[row]
-        if not bits:
-            continue
-        for col in range(5):
-            if bits & (1 << (4 - col)):
-                lcd.fill_rect(x + col * s, y + row * s, s, s, fg)
+    segs = _SEG7[d]
+    T  = max(4, H // 7)      # segment thickness
+    D  = T // 2              # diagonal cut at each tip
+    G  = max(1, T // 6)      # gap where segments meet
+    HH = H // 2              # centreline
+
+    hw = W - D * 2           # horizontal segment drawable width
+    vh = HH - D - G          # half-height of each vertical segment
+
+    if segs & 0x01: _fill_h_seg(lcd, x + D,     y,              hw, T, D, fg)  # a top
+    if segs & 0x02: _fill_v_seg(lcd, x + W - T, y + D,          vh, T, D, fg)  # b top-right
+    if segs & 0x04: _fill_v_seg(lcd, x + W - T, y + HH + G,     vh, T, D, fg)  # c bot-right
+    if segs & 0x08: _fill_h_seg(lcd, x + D,     y + H - T,      hw, T, D, fg)  # d bottom
+    if segs & 0x10: _fill_v_seg(lcd, x,          y + HH + G,     vh, T, D, fg)  # e bot-left
+    if segs & 0x20: _fill_v_seg(lcd, x,          y + D,          vh, T, D, fg)  # f top-left
+    if segs & 0x40: _fill_h_seg(lcd, x + D,     y + HH - T // 2, hw, T, D, fg)  # g middle
 
 
 def _draw_temp_int(lcd, temp_f, x, y, scale, fg, bg):
     """
-    Draw an integer temperature (whole °F, no decimal) in the 5×7 pixel font.
+    Draw an integer temperature (whole °F, no decimal) using 7-segment digits.
     Always occupies 3 digit positions, right-justified.
     temp_f: float or None (shows centre-bar dashes).
     """
     dw    = scale * 5
+    dh    = scale * 7
     gap   = max(1, scale // 2)
     pitch = dw + gap
-    lcd.fill_rect(x, y, 3 * pitch, scale * 7, bg)
+    lcd.fill_rect(x, y, 3 * pitch, dh, bg)
 
     if temp_f is None:
-        mid_y = y + scale * 3
+        mid_y = y + dh // 2 - scale // 2
         for i in range(3):
-            lcd.fill_rect(x + i * pitch + scale, mid_y, scale * 3, scale, fg)
+            lcd.fill_rect(x + i * pitch + scale, mid_y, dw - scale * 2, scale, fg)
         return
 
     temp_i = max(0, min(int(round(temp_f)), 999))
@@ -576,12 +593,12 @@ def _draw_temp_int(lcd, temp_f, x, y, scale, fg, bg):
     d0 = temp_i % 10
 
     if temp_i >= 100:
-        _draw_digit_5x7(lcd, d2, x,             y, scale, fg, bg)
-        _draw_digit_5x7(lcd, d1, x + pitch,     y, scale, fg, bg)
-        _draw_digit_5x7(lcd, d0, x + 2 * pitch, y, scale, fg, bg)
+        _draw_digit_7seg(lcd, d2, x,             y, dw, dh, fg, bg)
+        _draw_digit_7seg(lcd, d1, x + pitch,     y, dw, dh, fg, bg)
+        _draw_digit_7seg(lcd, d0, x + 2 * pitch, y, dw, dh, fg, bg)
     else:
-        _draw_digit_5x7(lcd, d1, x + pitch,     y, scale, fg, bg)
-        _draw_digit_5x7(lcd, d0, x + 2 * pitch, y, scale, fg, bg)
+        _draw_digit_7seg(lcd, d1, x + pitch,     y, dw, dh, fg, bg)
+        _draw_digit_7seg(lcd, d0, x + 2 * pitch, y, dw, dh, fg, bg)
 
 
 # ── UI widget helpers ─────────────────────────────────────────────────────────
