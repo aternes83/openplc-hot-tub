@@ -9,3 +9,6 @@ __pycache__/
 # Editor / IDE
 .vscode/
 *.swp
+
+# MicroPython firmware binaries
+*.bin

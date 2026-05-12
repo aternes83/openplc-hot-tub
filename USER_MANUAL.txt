@@ -1,0 +1,841 @@
+================================================================================
+         SPA CONTROLLER USER MANUAL
+         MicroPython Firmware for ESP32-S3 + Hosyond 4.0" Touchscreen
+================================================================================
+Document version: 1.0
+Firmware file: spa_control.py (MicroPython)
+Hardware: ESP32-S3-DevKitC-1-N8R8 + Hosyond 4.0" ST7796S / XPT2046 display
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+  1.  System Overview
+  2.  Hardware Requirements
+  3.  Initial Setup and Firmware Installation
+  4.  Touchscreen Layout
+  5.  Normal Day-to-Day Operation
+  6.  Temperature Control and Setpoints
+  7.  Pump and Jets Controls (Jet 1, Jet 2, Jet 3)
+  8.  Light Control
+  9.  Operating Modes: ECO and MAX JET
+ 10.  Backlight Brightness Control
+ 11.  Safety Features and Automatic Protections
+ 12.  Run Timers
+ 13.  Status Indicators and Status Bar
+ 14.  Sensor Readings Explained
+ 15.  Fault Codes and What to Do
+ 16.  Troubleshooting Common Issues
+ 17.  Technical Reference: Pin Assignments
+ 18.  Important Safety Notices
+
+================================================================================
+1. SYSTEM OVERVIEW
+================================================================================
+
+This spa controller is a custom-built electronic control system that manages
+the heating, pumps, jets, blower, and lighting of a hot tub or spa. It runs
+MicroPython firmware on an ESP32-S3 microcontroller and uses a 4.0-inch color
+touchscreen for all user interaction.
+
+Key capabilities:
+- Automatic temperature maintenance: the controller continuously monitors
+  the water temperature and fires the heater as needed to hold your chosen
+  target temperature.
+- Freeze protection: the heater and circulation pump will run automatically
+  whenever the water temperature drops below the target, regardless of whether
+  the spa is in an active session. This protects the plumbing from freezing
+  during cold weather.
+- Two-speed Jet 1 pump: the primary circulation pump can run at low speed
+  (for quiet heating and filtration) or high speed (for jet massage).
+- Two additional single-speed pumps (Jet 2 and Jet 3) for supplemental jets
+  or accessories.
+- Automatic safety shutdowns: the heater and pumps will shut off immediately
+  if the water overheats, the flow switch trips, the high-limit thermostat
+  opens, or an emergency stop is triggered.
+- 4-hour session timer: when you start a spa session, an automatic 4-hour
+  timer counts down; the session ends when it expires or when you touch any
+  control button (which resets the timer).
+- 60-minute light timer: the lights shut off automatically after 60 minutes.
+- ECO mode: reduces the target temperature to 80 F for energy saving.
+- MAX JET mode: turns on all pumps at full speed simultaneously for up to
+  20 minutes.
+
+Power supply assumptions:
+- Heater: 5 kW, 240 Vac single contactor
+- All high-voltage loads are switched through external relay contactors
+- The ESP32-S3 controller operates at 3.3 V logic only
+
+================================================================================
+2. HARDWARE REQUIREMENTS
+================================================================================
+
+Controller board:
+  ESP32-S3-DevKitC-1-N8R8 running MicroPython v1.28.0 or later
+
+Display:
+  Hosyond 4.0-inch 480 x 320 SPI TFT with ST7796S display chip and XPT2046
+  touch controller
+
+Sensors (installer-supplied):
+  - Water temperature sensor (wired to the ADC input; must return degrees
+    Fahrenheit to the controller)
+  - Flow switch (closes when water flow is sufficient)
+  - High-limit thermostat (normally closed; opens on over-temperature)
+  - Optional remote emergency stop button (normally closed circuit)
+
+Outputs switched through external relay/contactor boards:
+  - Pump 1 low-speed contactor
+  - Pump 1 high-speed contactor (interlocked with low-speed)
+  - Pump 2 contactor
+  - Pump 3 contactor
+  - Heater contactor (5 kW, 240 Vac)
+  - Jets valve/relay
+  - Blower relay
+  - Light relay
+
+================================================================================
+3. INITIAL SETUP AND FIRMWARE INSTALLATION
+================================================================================
+
+This section is for the installer or technician setting up the controller for
+the first time. If the controller is already installed and running, skip to
+Section 5 (Normal Operation).
+
+Step 1 - Install esptool on your computer
+  On a Mac or Linux computer with Python installed:
+    python3 -m pip install --upgrade esptool
+
+Step 2 - Erase the ESP32-S3 flash
+  Connect the ESP32-S3 board to your computer via USB. Find the serial port
+  name (e.g., /dev/cu.usbserial-8330 on Mac or COM3 on Windows).
+
+    python3 -m esptool --chip esp32s3 --port /dev/cu.usbserial-8330 erase_flash
+
+Step 3 - Flash MicroPython firmware
+  Use the provided firmware file: ESP32_GENERIC_S3-20260406-v1.28.0.bin
+
+    python3 -m esptool --chip esp32s3 --port /dev/cu.usbserial-8330 \
+      --baud 460800 write_flash -z 0 ESP32_GENERIC_S3-20260406-v1.28.0.bin
+
+Step 4 - Copy all controller files to the board
+  Three files must be transferred:
+    - spa_control.py  (renamed to main.py on the board so it runs at boot)
+    - st7796.py       (display driver)
+    - xpt2046.py      (touch controller driver)
+
+  Using mpremote:
+    python3 -m mpremote connect /dev/cu.usbserial-8330 \
+      fs cp spa_control.py :main.py
+    python3 -m mpremote connect /dev/cu.usbserial-8330 \
+      fs cp st7796.py :st7796.py
+    python3 -m mpremote connect /dev/cu.usbserial-8330 \
+      fs cp xpt2046.py :xpt2046.py
+
+Step 5 - Reset the board
+    python3 -m mpremote connect /dev/cu.usbserial-8330 reset
+
+  The display should light up and show the spa control interface within a few
+  seconds.
+
+Step 6 - Verify wiring
+  Before connecting high-voltage loads, use a multimeter to confirm that each
+  output GPIO pin switches between 0 V and 3.3 V as expected. Check that the
+  relay board's trigger polarity (active-high or active-low) matches the
+  controller output behavior. Refer to Section 17 for the full pin map.
+
+Step 7 - Calibrate temperature sensor
+  The function read_water_temp_f() in spa_control.py must be updated to
+  read your actual temperature sensor (ADC pin and conversion formula for
+  your specific sensor type). By default it returns a fixed value of 95 F
+  for testing only. A qualified technician must complete this step before
+  the heater is used.
+
+================================================================================
+4. TOUCHSCREEN LAYOUT
+================================================================================
+
+The 480 x 320 pixel display is divided into four regions:
+
+TOP BAR (full width, top 22 pixels)
+  Left side:  sun icon and brightness slider (drag left/right to dim or
+              brighten the backlight)
+  Right side: Bluetooth icon, WiFi icon, current time (HH:MM from RTC)
+
+TEMPERATURE PANEL (left side, approximately 282 pixels wide)
+  Top section:   "WATER TEMP" label with large 7-segment digits showing the
+                 current measured water temperature in degrees Fahrenheit
+  Middle section: "TARGET TEMP" label with slightly smaller 7-segment digits
+                 showing the current temperature setpoint
+  Bottom section: Two large round buttons:
+                 [ - ]  decreases setpoint by 1 F
+                 [ + ]  increases setpoint by 1 F
+
+CONTROLS PANEL (right side, approximately 198 pixels wide)
+  JET 1 section (three buttons, top):
+    [ OFF ]  [ LOW ]  [ HI ]
+    Selects the operating mode for the primary circulation pump.
+
+  JET 2 / 3 section (two buttons):
+    [ JET 2 ]  [ JET 3 ]
+    Toggle buttons for the two auxiliary pumps.
+
+  LIGHT section (one wide button):
+    Light bulb icon button -- toggles the spa light on and off.
+
+  MODES section (two buttons, bottom):
+    [ ECO ]    Activates ECO energy-saving mode (see Section 9)
+    [ MAX JET ] Activates full-power all-jets mode (see Section 9)
+
+STATUS BAR (full width, bottom 45 pixels)
+  Four LED indicator squares with labels:
+    HEAT  -- amber when the heater contactor is energized
+    JETS  -- teal when any pump is running
+    LITE  -- yellow when the light is on
+    FAULT -- red when a fault condition is active; shows fault code (FC:n)
+
+================================================================================
+5. NORMAL DAY-TO-DAY OPERATION
+================================================================================
+
+Starting a Spa Session
+----------------------
+1. Touch the screen to wake it if the backlight is dimmed or off.
+2. The water temperature is always shown on the left panel.
+   If the temperature is below your target, the heater is likely already
+   running automatically (see freeze protection in Section 11).
+3. To begin a jets session, touch [ LOW ] or [ HI ] in the JET 1 section.
+   - LOW: quiet circulation speed, suitable for gentle soaking.
+   - HI: high-speed jet massage.
+4. Optionally turn on JET 2 and/or JET 3 by tapping their buttons.
+5. Turn on the light by tapping the light bulb button.
+6. The spa session runs for up to 4 hours from the last button press.
+   Every time you touch a control button, the 4-hour timer resets, so
+   active use extends the session automatically.
+
+Ending a Session
+-----------------
+1. Set JET 1 to [ OFF ] (only allowed when the heater does not need the
+   pump for water flow -- the button is blocked if heating is required).
+2. Turn off JET 2 and JET 3 if they are running.
+3. Turn off the light.
+4. The controller will continue to monitor the water temperature and restart
+   the heater and circulation pump automatically whenever the temperature
+   drops below the target setpoint, even with all jets turned off.
+   This is normal and is the freeze-protection behavior.
+
+Day-to-Day Use Notes
+---------------------
+- You do not need to "turn the heater on" manually. The heater is always
+  armed and will turn on automatically when the water cools below the
+  setpoint (minus the hysteresis window).
+- The heater WILL NOT run unless the circulation pump is running and the
+  flow switch confirms adequate water flow. This is a safety interlock
+  that cannot be bypassed from the user interface.
+- If you see the HEAT LED lit but the JETS LED is not lit, this means the
+  controller is running Pump 1 at low speed automatically for circulation;
+  this is normal background heating.
+
+================================================================================
+6. TEMPERATURE CONTROL AND SETPOINTS
+================================================================================
+
+Reading the Temperature Display
+---------------------------------
+The large digits in the top half of the temperature panel show the current
+measured water temperature in degrees Fahrenheit, updated every control cycle
+(approximately every 50 milliseconds, smoothed over 8 samples).
+
+Reading the Setpoint Display
+------------------------------
+The smaller digits below the temperature reading show the current target
+(setpoint) temperature in degrees Fahrenheit.
+
+Adjusting the Setpoint
+------------------------
+Touch the [ - ] button to lower the setpoint by 1 F.
+Touch the [ + ] button to raise the setpoint by 1 F.
+Hold either button and it will repeat automatically every 150 milliseconds.
+
+Setpoint limits enforced by the controller:
+  Minimum setpoint: 80 F
+  Maximum setpoint: 104 F
+  Step size: 1 F per press
+
+Note: while ECO mode is active, the setpoint is locked to 80 F and the
++/- buttons have no effect. Disable ECO mode first (see Section 9).
+
+How the Thermostat Works
+--------------------------
+The controller uses a deadband (hysteresis) thermostat with a 0.5 F window:
+  - The heater turns ON when the water temperature drops below
+    (setpoint - 0.25 F).
+  - The heater turns OFF when the water temperature rises above
+    (setpoint + 0.25 F).
+
+Example with setpoint = 100 F:
+  - Heater turns on below 99.75 F
+  - Heater turns off above 100.25 F
+
+In addition to the temperature check, the heater can only run if ALL of the
+following conditions are met:
+  1. The circulation pump has been running for at least 5 seconds (pump
+     preheat timer).
+  2. The flow switch confirms water is moving (confirmed for at least 5
+     seconds after pump start).
+  3. The high-limit thermostat has not tripped.
+  4. The water temperature is not above the maximum safe temperature (105 F).
+  5. No fault is active.
+
+Safe Temperature Ceiling
+--------------------------
+The controller enforces a hard maximum water temperature of 105 F. If the
+measured temperature exceeds this value:
+  - All pumps, heater, jets, and blower are immediately shut off.
+  - Fault code 3 (OVERTEMP) is set.
+  - Heating will not resume until the water cools below 105 F and any
+    active faults are cleared.
+
+================================================================================
+7. PUMP AND JETS CONTROLS
+================================================================================
+
+JET 1 (Primary Circulation Pump -- Two-Speed)
+----------------------------------------------
+JET 1 is the main circulation and jet pump. It has three operating states
+selected by the three buttons in the JET 1 section of the controls panel.
+
+  [ OFF ]  -- Pump 1 is stopped.
+              IMPORTANT: The OFF button is automatically blocked (does not
+              respond to taps) when the heater needs water flow to operate
+              safely. This protects the heater element. If the water is
+              below the target temperature, you cannot manually turn Pump 1
+              off; it will stay running until the water reaches the setpoint.
+
+  [ LOW ]  -- Pump 1 runs at low speed. This is the standard mode for
+              gentle soaking and background heating. It is also the speed
+              the controller uses automatically when freeze protection
+              is active.
+
+  [ HI ]   -- Pump 1 runs at high speed. Use this for full jet massage.
+              The low-speed and high-speed windings are interlocked by the
+              controller; both cannot be energized at the same time.
+
+The active selection is highlighted on the button.
+
+The button display always reflects the actual pump state. If the heater
+forces Pump 1 LOW regardless of your selection, the LOW button will appear
+highlighted even if you had pressed OFF.
+
+JET 2 and JET 3 (Single-Speed Auxiliary Pumps)
+------------------------------------------------
+JET 2 and JET 3 are toggle buttons. Tap once to turn on; tap again to
+turn off. Both require Jet 1 (the main permissive) to be active -- they
+will not energize unless the spa session is active and no fault is present.
+
+  [ JET 2 ] -- Toggles auxiliary pump 2
+  [ JET 3 ] -- Toggles auxiliary pump 3
+
+Blower
+------
+The blower is controlled by a hardware input (GPIO 18) rather than by a
+touchscreen button in the current UI. If your installation has a physical
+blower switch, it connects to that input.
+
+Jets Valve
+----------
+The jets valve/relay (GPIO 39) is similarly driven by a hardware input
+(GPIO 17) rather than the touchscreen. Connect a physical switch if your
+spa has a separate jet diverter valve.
+
+================================================================================
+8. LIGHT CONTROL
+================================================================================
+
+Tapping the light bulb button in the LIGHT section toggles the spa light.
+When the light is on, the button is highlighted and the LITE LED in the
+status bar turns yellow.
+
+The light runs on an automatic 60-minute timer. If the light has been on
+continuously for 60 minutes without any touchscreen activity, it will turn
+off automatically. Touching the screen or any button resets this timer.
+
+The light will also turn off if a fault occurs (fault code 1, 2, 3, or 4).
+
+Note: the light relay output is independent of the spa enable permissive.
+The light can be turned on even when the jets are off.
+
+================================================================================
+9. OPERATING MODES: ECO AND MAX JET
+================================================================================
+
+These two special modes are in the MODES section at the bottom right of the
+controls panel.
+
+ECO Mode
+---------
+ECO mode is an energy-saving mode intended for when the spa will not be used
+for an extended period but you still want freeze protection.
+
+To activate ECO mode: tap [ ECO ]. The button turns green.
+To deactivate ECO mode: tap [ ECO ] again.
+
+What ECO mode does:
+  - Locks the temperature setpoint to 80 F (the ECO setpoint).
+  - Automatically sets Jet 1 to LOW speed.
+  - Turns off Jet 2 and Jet 3.
+  - The heater will only fire to maintain 80 F.
+  - Setpoint +/- buttons are inactive while ECO is on.
+  - If MAX JET is active when ECO is selected, MAX JET is cancelled first.
+  - When you turn ECO off, the setpoint returns to whatever it was before
+    you activated ECO.
+
+MAX JET Mode
+-------------
+MAX JET mode activates all pumps at full speed simultaneously for a timed
+burst of 20 minutes. Use it for maximum hydrotherapy.
+
+To start MAX JET: tap [ MAX JET ]. The button turns orange.
+To stop MAX JET early: tap [ MAX JET ] again.
+
+What MAX JET mode does:
+  - Forces Jet 1 to HIGH speed.
+  - Turns on Jet 2 and Jet 3.
+  - Counts down from 20 minutes; the button label shows the remaining
+    time (e.g., "15 min", "< 1m").
+  - After 20 minutes, all overrides are released and control returns to
+    your normal settings.
+  - If ECO mode is active when MAX JET is selected, ECO is cancelled first
+    and your previous setpoint is restored.
+
+ECO and MAX JET are mutually exclusive -- activating one cancels the other.
+
+================================================================================
+10. BACKLIGHT BRIGHTNESS CONTROL
+================================================================================
+
+The brightness slider is in the top-left corner of the screen, next to the
+sun icon. Drag your finger left to decrease brightness, right to increase it.
+The slider range is 5% (dim) to 100% (full brightness).
+
+The controller also dims and sleeps the display automatically when no touch
+activity is detected:
+
+  After 2 minutes of no touch:  display dims to 25% brightness.
+  After 10 minutes of no touch: display turns off completely.
+
+Touching the screen when it is dimmed or off will wake it back to the saved
+brightness level. The first touch after sleep is a "wake tap" and does NOT
+trigger the button underneath your finger. This prevents unintended control
+changes when waking the screen.
+
+================================================================================
+11. SAFETY FEATURES AND AUTOMATIC PROTECTIONS
+================================================================================
+
+The controller implements several layers of safety that operate automatically
+and cannot be overridden through the touchscreen.
+
+11.1 Heater-Pump Interlock (Most Critical Safety Feature)
+----------------------------------------------------------
+The heater CANNOT run unless a pump is circulating water through the heater
+element. Specifically, before the heater will turn on:
+
+  a) At least one pump must have been running for 5 seconds (pump preheat
+     timer). This ensures the water path is primed.
+  b) The flow switch must confirm water movement for at least 5 seconds
+     (flow prove timer).
+
+If the flow switch opens while the heater is running (indicating loss of
+flow), the heater shuts off immediately and fault code 1 is set.
+
+11.2 Freeze Protection
+-----------------------
+The spa is designed to maintain the target temperature around the clock,
+not just during scheduled sessions. Whenever the water temperature drops
+below the setpoint:
+
+  - Pump 1 starts at low speed automatically (using the freeze permissive,
+    which is independent of the 4-hour session timer).
+  - The heater fires once flow is proven (after the 5-second delays above).
+  - This runs indefinitely; the 4-hour run timer does NOT apply to freeze-
+    protection heating.
+  - Jets 2 and 3 are not turned on automatically; only Pump 1 LOW runs
+    for freeze protection.
+
+This means the spa will keep itself at your target temperature even if you
+have not started a session and the run timer has expired.
+
+11.3 Overheat Protection
+-------------------------
+Two independent overheat protections are provided:
+
+  Software overheat limit (105 F):
+    If the measured water temperature rises above 105 F, the controller
+    sets fault code 3 and immediately shuts off all pumps, heater, jets,
+    and blower. The fault stays active until the temperature falls below
+    105 F.
+
+  Hardware high-limit thermostat:
+    A mechanical thermostat wired to the xHighLimitOK input provides a
+    second, independent layer of overheat protection. When this device
+    opens (indicating the thermostat has tripped), fault code 2 is set
+    and the same emergency shutdown occurs. This device must be manually
+    reset after it trips; see your spa's mechanical documentation.
+
+11.4 Emergency Stop
+--------------------
+A remote emergency stop circuit can be wired to the xRemoteEStopOK input
+(GPIO 11). When this circuit opens (indicating the e-stop button was
+pressed), fault code 4 is set and all loads are immediately shut off.
+
+If no external e-stop is installed, this input defaults to TRUE (safe)
+and no action is taken.
+
+11.5 Pump 1 Two-Speed Interlock
+---------------------------------
+The controller never energizes both the low-speed and high-speed windings
+of Pump 1 at the same time. HIGH mode always overrides LOW mode. The relay
+outputs are mutually exclusive in the software.
+
+11.6 Fault Latch
+-----------------
+When any fault is detected:
+  - All pump outputs are set to OFF.
+  - The heater output is set to OFF.
+  - The jets output is set to OFF.
+  - The blower output is set to OFF.
+  - The FAULT LED in the status bar turns red.
+  - The fault code (FC:n) is shown in the status bar.
+
+Faults are re-evaluated on every control cycle (every 50 ms). Most faults
+clear automatically when the underlying condition is resolved (e.g., when
+the temperature drops back below 105 F). The high-limit thermostat fault
+(code 2) requires physical reset of the thermostat device.
+
+================================================================================
+12. RUN TIMERS
+================================================================================
+
+Spa Session Timer (4 hours)
+-----------------------------
+When the spa is actively running (any pump active through the user
+interface), the controller starts a 4-hour countdown. When 4 hours
+elapse, the session ends: Jet 1 returns to OFF and Jets 2 and 3 turn off.
+
+Every time you tap a control button on the touchscreen, the 4-hour timer
+resets. Active use of the spa will therefore extend the session
+indefinitely. The timer only counts down when the screen is idle.
+
+The freeze-protection heating path is NOT subject to the 4-hour timer.
+Background heating to maintain the setpoint temperature will continue
+after the run timer expires.
+
+Light Timer (60 minutes)
+--------------------------
+The light turns off automatically after 60 minutes of continuous use.
+Touching the screen resets the light timer just as it resets the spa
+timer. To keep the light on for a longer period, simply interact with
+the screen periodically.
+
+================================================================================
+13. STATUS INDICATORS AND STATUS BAR
+================================================================================
+
+The bottom status bar contains four LED indicator squares. The color
+of each LED tells you the current state of that function.
+
+HEAT LED (leftmost)
+  Amber / orange: The heater contactor is currently energized. The heater
+                  element is actively heating the water.
+  Dark (off):     The heater is not running.
+
+JETS LED (second from left)
+  Teal / cyan:    At least one pump is currently running.
+  Dark (off):     No pumps are running.
+
+LITE LED (second from right)
+  Yellow:         The light relay is currently on.
+  Dark (off):     The light is off.
+
+FAULT LED (rightmost)
+  Red:            A fault is active. The fault code (FC:n) is shown in red
+                  text next to the LED. See Section 15 for fault codes.
+  Dark (off):     No fault. The label "FAULT" appears in grey.
+
+The button highlights in the controls panel also reflect actual relay
+states. For example, if the controller forces Pump 1 to LOW speed for
+freeze protection even though you have the button set to OFF, the LOW
+button will appear highlighted.
+
+================================================================================
+14. SENSOR READINGS AND WHAT THEY MEAN
+================================================================================
+
+Water Temperature Reading
+--------------------------
+The large 7-segment digits in the temperature panel show the current water
+temperature in degrees Fahrenheit. This reading is a rolling average of the
+last 8 sensor samples (approximately 400 ms of smoothing) to eliminate noise.
+
+If the sensor reading cannot be obtained (e.g., a disconnected sensor), the
+display shows three centre-bar dashes (---) in place of the temperature. The
+controller will default to a conservative reading and will not activate the
+heater with an invalid temperature.
+
+Flow Switch
+------------
+The flow switch input (GPIO 9) is TRUE when adequate water flow is confirmed.
+This switch must close within a few seconds of a pump starting, or the heater
+will not be allowed to run. The controller waits 5 seconds after the switch
+closes before permitting the heater to start (flow prove delay).
+
+High-Limit Thermostat
+----------------------
+The high-limit input (GPIO 10) is normally TRUE (circuit closed = safe).
+It becomes FALSE when the mechanical thermostat trips. This is an independent
+safety device, typically located near the heater element, calibrated to a
+temperature above the normal operating range but below a dangerous level.
+
+================================================================================
+15. FAULT CODES AND WHAT TO DO
+================================================================================
+
+Fault codes are displayed in the status bar as "FC:n" where n is a number.
+
+FC:1 -- NO FLOW
+  Meaning: Flow was previously proven (confirmed), but the flow switch then
+           opened while a pump was still running. This indicates loss of
+           water flow while the system was running.
+  What to check:
+    - Is the pump actually running? Check for audible pump operation.
+    - Is the filter blocked or clogged?
+    - Is the pump basket clogged with debris?
+    - Is the water level in the spa correct?
+    - Is there an air lock in the plumbing?
+  Recovery: The fault clears automatically when the flow switch closes again.
+            Once flow is restored, normal operation resumes.
+
+FC:2 -- HIGH LIMIT TRIPPED
+  Meaning: The mechanical high-limit thermostat has opened.
+  What to check:
+    - The water or heater element may be overheated.
+    - Allow the system to cool, then physically reset the high-limit
+      thermostat according to your spa's service documentation.
+    - If the high limit is tripping repeatedly, the heater element or
+      thermostat may be faulty. Contact a qualified technician.
+  Recovery: This fault requires manual reset of the physical high-limit
+            device. The fault will clear once the device is reset and
+            the input returns to TRUE.
+
+FC:3 -- OVERTEMP (Software Overheat)
+  Meaning: The measured water temperature has exceeded 105 F.
+  What to check:
+    - Is the temperature reading accurate? Check the sensor.
+    - Was the spa running for an extended period without flow?
+    - If the temperature is genuinely above 105 F, allow the water to
+      cool naturally. Do not use the spa until it has cooled.
+  Recovery: The fault clears automatically when the water temperature
+            drops back below 105 F.
+
+FC:4 -- EMERGENCY STOP
+  Meaning: The remote emergency stop circuit (xRemoteEStopOK) has opened.
+  What to check:
+    - Has the physical e-stop button been pressed?
+    - Is the e-stop wiring intact?
+    - If no physical e-stop is installed, check the wiring at GPIO 11.
+  Recovery: Reset the emergency stop device (or circuit) so the input
+            returns to TRUE. The fault clears automatically.
+
+No fault code shown, FAULT LED dark:
+  Normal operation. No action needed.
+
+================================================================================
+16. TROUBLESHOOTING COMMON ISSUES
+================================================================================
+
+The display does not turn on after power-up.
+  - Check the USB or power supply connection to the ESP32-S3 board.
+  - Verify the display's VCC is receiving proper voltage.
+  - Confirm the SPI wiring between the ESP32-S3 and the display (SCK, MOSI,
+    MISO, CS, DC, RST).
+  - Confirm that spa_control.py was copied to the board as main.py and that
+    st7796.py and xpt2046.py are also present on the board's filesystem.
+  - Connect a serial terminal (115200 baud) and check for error messages
+    printed at boot.
+
+The display is on but touch does not respond.
+  - Verify the XPT2046 touch wiring (TOUCH_CS on GPIO 43, TOUCH_IRQ on
+    GPIO 45, shared SPI bus on GPIO 42/47/48).
+  - Touch the center of a known button area; the touch zone includes a
+    16-pixel margin around each button.
+  - If the screen was just sleeping, the first touch wakes it without
+    triggering any button -- this is normal. Try tapping again.
+  - Connect a serial terminal and set TOUCH_DEBUG = True in the code to see
+    raw touch coordinates printed; this helps diagnose calibration issues.
+
+The heater does not turn on.
+  - Is the water temperature already above the setpoint? If the water is
+    at or above the target, the heater will not run. This is normal.
+  - Is a fault active? Check the FAULT LED and resolve any active fault.
+  - Is Pump 1 running? The heater requires flow. Tap [ LOW ] on JET 1 and
+    wait approximately 10 seconds for the flow prove timer.
+  - Is the flow switch wiring correct? GPIO 9 must be HIGH (3.3 V) when
+    flow is present.
+  - Is the high-limit thermostat circuit intact on GPIO 10?
+  - Has the 4-hour run timer expired? If so, touch the screen to restart the
+    session; background heating (freeze protection) should still be active.
+
+The JET 1 OFF button does not respond when tapped.
+  - This is intentional. If the water temperature is below the setpoint, the
+    heater needs the pump running to circulate water safely. The OFF button
+    is blocked until the temperature reaches the setpoint. Wait for the water
+    to heat up and the heater to shut off naturally.
+
+Pumps run but the heater never fires.
+  - Check that the flow switch input (GPIO 9) is wiring correctly and is
+    reading TRUE when flow is present.
+  - Allow 10 seconds after pump start for both the pump preheat timer and
+    the flow prove timer to elapse.
+  - The heater requires both timers to elapse before it will fire.
+
+The temperature reading shows dashes (---).
+  - The temperature sensor is not connected or is returning an invalid value.
+  - Check the sensor wiring and the read_water_temp_f() function in
+    spa_control.py, which must be customized for your specific sensor type
+    and ADC pin.
+
+The spa shuts off after 4 hours.
+  - This is the normal 4-hour session safety timer.
+  - The freeze-protection heating continues even after the session timer
+    expires; only the user-requested jets and active session end.
+  - Touch any button on the screen to restart a new 4-hour session.
+
+The light turns off by itself after an hour.
+  - This is the normal 60-minute light auto-off timer.
+  - Tap the light button again to turn it back on, which restarts the timer.
+
+The backlight dims or turns off on its own.
+  - After 2 minutes of no touch activity the screen dims to 25%.
+  - After 10 minutes of no touch activity the screen turns off.
+  - Touch the screen to wake it. The first touch only wakes the backlight.
+
+ECO mode is preventing me from increasing the setpoint.
+  - ECO mode locks the setpoint to 80 F. Tap the [ ECO ] button to disable
+    ECO mode. The setpoint will return to its previous value and you can
+    then adjust it normally.
+
+MAX JET turned off before I expected.
+  - MAX JET has a 20-minute automatic cutoff. This is a safety feature to
+    prevent extended full-power pump operation without attention. Tap
+    [ MAX JET ] again to restart another 20-minute cycle.
+
+================================================================================
+17. TECHNICAL REFERENCE: PIN ASSIGNMENTS
+================================================================================
+
+This section is for reference during installation, maintenance, and
+troubleshooting. All logic levels are 3.3 V; do NOT connect 5 V or mains
+voltage directly to any GPIO pin.
+
+DIGITAL INPUTS (configured as Pin.IN with internal pull-up)
+
+  Signal name         GPIO    Description
+  ----------------    ----    ----------------------------------------
+  xSpaEnable           4      Master spa enable input
+  xPumpRequest         5      Pump 1 low-speed request (physical switch)
+  xHeatRequest         6      Heat enable request (physical switch)
+  xPump1HighRequest    7      Pump 1 high-speed request
+  xPump2Request       15      Pump 2 request
+  xPump3Request       16      Pump 3 request
+  xJetsRequest        17      Jets valve request
+  xBlowerRequest      18      Blower request
+  xLightRequest        8      Light request (physical switch)
+  xFlowSwitch          9      Flow switch input (HIGH = flow OK)
+  xHighLimitOK        10      High-limit thermostat (HIGH = safe)
+  xRemoteEStopOK      11      E-stop circuit (HIGH = safe, no stop)
+
+DIGITAL OUTPUTS (configured as Pin.OUT, drive relay/contactor board inputs)
+
+  Signal name         GPIO    Description
+  ----------------    ----    ----------------------------------------
+  xPump1_Low          12      Pump 1 low-speed contactor command
+  xPump1_High         13      Pump 1 high-speed contactor command
+  xPump2              14      Pump 2 contactor command
+  xPump3              21      Pump 3 contactor command
+  xHeater             38      Heater contactor command (5 kW, 240 Vac)
+  xJets               39      Jets relay command
+  xBlower             40      Blower relay command
+  xLight              41      Light relay command
+
+DISPLAY (SPI bus shared by LCD and touch)
+
+  Signal name         GPIO    Description
+  ----------------    ----    ----------------------------------------
+  SCK (SPI clock)     42      Shared SPI clock
+  MOSI                47      SPI data to display and touch
+  MISO                48      SPI data from touch
+  LCD_CS               2      LCD chip select
+  LCD_DC               1      LCD data/command select
+  LCD_RST              3      LCD hardware reset
+  LCD_BL              44      Backlight PWM (NPN transistor gate)
+  TOUCH_CS            43      Touch controller chip select
+  TOUCH_IRQ           45      Touch interrupt (input-only GPIO)
+
+RESERVED / AVOID
+
+  GPIO 0:       Boot strap pin -- do not use for normal controls.
+  GPIO 19/20:   USB D-/D+ -- do not use if USB is in use.
+  GPIO 45/46:   Strap/input-only behavior -- avoid for outputs.
+  GPIO 26-37:   Typically connected to internal flash/PSRAM -- do not use.
+
+================================================================================
+18. IMPORTANT SAFETY NOTICES
+================================================================================
+
+READ BEFORE OPERATING OR SERVICING THE SPA CONTROLLER.
+
+1. HIGH VOLTAGE HAZARD. This controller uses 240 Vac to operate the heater
+   and pump contactors. Incorrect wiring can cause electric shock, fire, or
+   death. All high-voltage wiring must be performed by a licensed electrician
+   in accordance with local electrical codes.
+
+2. DO NOT CONNECT MAINS VOLTAGE TO GPIO PINS. The ESP32-S3 operates at
+   3.3 V logic levels. The GPIO pins are not rated for mains voltage. Use
+   properly rated opto-isolated relay or contactor driver modules for all
+   high-voltage load switching.
+
+3. WATER AND ELECTRICITY ARE DANGEROUS IN COMBINATION. Ensure all electrical
+   enclosures are properly rated for wet environments (NEMA 4 or equivalent)
+   and that all ground-fault circuit interrupter (GFCI) protection required
+   by local code is installed.
+
+4. DO NOT BYPASS SAFETY INTERLOCKS. The heater-flow interlock, high-limit
+   thermostat, flow switch, and emergency stop are critical safety features.
+   Do not modify or disable them. A heater operating without water flow can
+   cause fire, equipment damage, or personal injury.
+
+5. MAXIMUM SAFE WATER TEMPERATURE IS 104 F (40 C) FOR HUMAN OCCUPANCY. The
+   software ceiling is set to 105 F. Do not raise the setpoint beyond the
+   recommended safe temperature for human use. Consult local regulations and
+   your spa manufacturer's guidelines.
+
+6. VERIFY CALIBRATION BEFORE USE. The temperature sensor interface (function
+   read_water_temp_f() in spa_control.py) ships with a placeholder value of
+   95 F for testing. A technician MUST replace this with the correct sensor
+   reading code before the system is used to control an actual heater.
+
+7. TEST ALL FAULTS AND INTERLOCKS BEFORE COMMISSIONING. Before loading the
+   spa with users, verify that:
+   - The heater shuts off immediately when the flow switch is opened.
+   - The heater shuts off immediately when the high-limit input is opened.
+   - Fault codes are displayed correctly on the touchscreen.
+   - The emergency stop circuit (if installed) shuts everything down.
+
+8. PERIODIC MAINTENANCE. Check all wiring connections, relay contacts, and
+   the flow switch annually. Replace any components that show signs of
+   corrosion, heat damage, or wear.
+
+================================================================================
+END OF USER MANUAL
+================================================================================
