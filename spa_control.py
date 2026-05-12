@@ -462,6 +462,8 @@ TIMER_LIGHT_POS   = (0, 0)
 # ── Touch button rects (x, y, w, h) ──────────────────────────────────────────
 # Controls-panel y-values shifted up 28 px (title bar removed).
 UI_BUTTONS = {
+    # Top bar – brightness slider (sun icon at x≈4; slider track x=22…152)
+    "brightness_slider": (22, 0, 130, _TOP_BAR_H),
     # Temperature panel – rounded-rect setpoint buttons (y shifted by _TOP_BAR_H)
     "setpoint_minus": (10,  230, 120, 44),
     "setpoint_plus":  (152, 230, 120, 44),
@@ -480,6 +482,7 @@ UI_BUTTONS = {
 }
 
 TOUCH_BUTTON_ORDER = (
+    "brightness_slider",   # checked first so it doesn't compete with panel buttons
     "pump_off",
     "pump_low",
     "pump_high",
@@ -794,6 +797,25 @@ def _draw_bt_icon(lcd, x, y, color):
     lcd.fill_rect(x,     y + 8, 2, 2,  color)
 
 
+def _draw_sun_icon(lcd, cx, cy, color):
+    """
+    Draw a 13 × 13 px sun icon centred at (cx, cy).
+    4×4 px core circle + 8 single-pixel rays (cardinal + diagonal).
+    """
+    # Core circle
+    lcd.fill_rect(cx - 2, cy - 2, 5, 5, color)
+    # Cardinal rays (2 px long, 1 px wide)
+    lcd.fill_rect(cx,     cy - 6, 1, 2, color)   # top
+    lcd.fill_rect(cx,     cy + 5, 1, 2, color)   # bottom
+    lcd.fill_rect(cx - 6, cy,     2, 1, color)   # left
+    lcd.fill_rect(cx + 5, cy,     2, 1, color)   # right
+    # Diagonal rays (2×2 px blobs)
+    lcd.fill_rect(cx - 5, cy - 5, 2, 2, color)   # TL
+    lcd.fill_rect(cx + 4, cy - 5, 2, 2, color)   # TR
+    lcd.fill_rect(cx - 5, cy + 4, 2, 2, color)   # BL
+    lcd.fill_rect(cx + 4, cy + 4, 2, 2, color)   # BR
+
+
 def _draw_lightbulb(lcd, cx, cy, color):
     """
     Draw a light-bulb icon centred at (cx, cy).
@@ -972,10 +994,10 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
         ui_state["_touch_press_ms"] = None
         return
 
-    # Wake display on any touch; reset idle timer only on real user interaction
-    # (a confirmed button press below) so electrical noise cannot defeat dim/sleep.
+    # Wake display on any touch; restore to user-saved brightness.
     if ui_state.get("_dim_state", "bright") != "bright":
-        _set_backlight(BL_FULL_DUTY)
+        saved = ui_state.get("bl_brightness", BL_FULL_DUTY)
+        _set_backlight(saved)
         ui_state["_dim_state"] = "bright"
         ui_state["_last_any_touch_ms"] = now_ms   # wake-tap counts as activity
         # Swallow this touch so a sleep-tap never triggers a button.
@@ -984,6 +1006,20 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
         return
 
     x, y = point
+
+    # ── Brightness slider: immediate update on drag, no debounce delay ───────
+    if _touch_button_at(x, y) == "brightness_slider":
+        bx, _by, bw, _bh = UI_BUTTONS["brightness_slider"]
+        pct = max(5, min(100, int((x - bx) * 100 // bw)))
+        if pct != ui_state.get("bl_brightness", BL_FULL_DUTY):
+            ui_state["bl_brightness"] = pct
+            _set_backlight(pct)
+            ui_state.pop("_c_top", None)   # force slider redraw
+        ui_state["_last_any_touch_ms"] = now_ms
+        ctrl._run_timer_start_ms = None
+        ui_state["last_touch_ms"] = now_ms
+        return
+
     button = _touch_button_at(x, y)
     if TOUCH_DEBUG:
         print("HIT x=%d y=%d -> %s" % (x, y, button if button else "MISS"))
@@ -1196,22 +1232,34 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
     if lcd is None:
         return
 
-    # ── Top bar: BT icon, WiFi icon, clock (right-aligned, cached per minute) ─
+    # ── Top bar: brightness slider (left) + BT/WiFi/clock (right) ─────────────
     bt_con   = bool(ui_state.get("bt_connected",   False))
     wifi_con = bool(ui_state.get("wifi_connected", False))
     time_str = _get_time_str()
-    top_key  = (bt_con, wifi_con, time_str)
+    bl_pct   = int(ui_state.get("bl_brightness", BL_FULL_DUTY))
+    top_key  = (bt_con, wifi_con, time_str, bl_pct)
     if top_key != ui_state.get("_c_top"):
         ui_state["_c_top"] = top_key
-        ty = (_TOP_BAR_H - 10) // 2   # icon top (10-px tall icons)
+        ty = (_TOP_BAR_H - 10) // 2   # icon top  (10-px tall icons)
         tt = (_TOP_BAR_H - 8)  // 2   # text top  (8-px tall font)
-        # Clear the right-hand portion of the top bar
+
+        # ── Left: sun icon + brightness slider ──────────────────────────────
+        # Sun icon centred vertically at x=11
+        lcd.fill_rect(0, 0, 160, _TOP_BAR_H - 1, C_PANEL)   # clear region
+        _draw_sun_icon(lcd, 11, _TOP_BAR_H // 2, C_LABEL)
+        # Slider track (x=22 … 152, height=6, vertically centred)
+        _sx, _sy, _sw, _sh = 22, (_TOP_BAR_H - 6) // 2, 130, 6
+        lcd.fill_rect(_sx, _sy, _sw, _sh, C_BORDER)          # empty track
+        _fill_w = max(4, _sw * bl_pct // 100)
+        lcd.fill_rect(_sx, _sy, _fill_w, _sh, C_LABEL)       # filled portion
+        # Thumb tick (3 px wide, full bar height)
+        _thumb_x = _sx + _fill_w - 2
+        lcd.fill_rect(_thumb_x, 2, 3, _TOP_BAR_H - 4, C_TEXT)
+
+        # ── Right: BT icon, WiFi bars, time ─────────────────────────────────
         lcd.fill_rect(390, 0, 90, _TOP_BAR_H - 1, C_PANEL)
-        # BT icon (8×10 px)
         _draw_bt_icon(lcd,  396, ty, C_LABEL)
-        # WiFi bars (11×10 px) – 6 px gap after BT
         _draw_wifi_icon(lcd, 410, ty, C_LABEL)
-        # Time "HH:MM" – 12 px gap after WiFi, flush to right edge
         lcd.text(time_str,   436, tt, C_LABEL)
 
     heat_req  = ui_state["xHeatRequest"]
@@ -1397,6 +1445,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
         "_hmi_initialized": False,
         "_dynamic_key": None,
         "_timer_key": None,
+        "bl_brightness":  BL_FULL_DUTY,   # 0-100 %; persists across dim/sleep cycles
         # Top-bar connectivity state – TEST: forced on to verify icon layout
         "bt_connected":   True,
         "wifi_connected": True,
