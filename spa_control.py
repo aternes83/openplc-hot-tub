@@ -158,7 +158,7 @@ class SpaController:
         self.max_safe_temp_f = 105.0
         self.flow_prove_ms = 5_000
         self.pump_preheat_ms = 5_000
-        self.default_run_ms = 20 * 60 * 1000  # 20 minutes default spa runtime
+        self.default_run_ms = 4 * 60 * 60 * 1000  # 4-hour safety ceiling; resets on any HMI press
         self.light_run_ms = 60 * 60 * 1000  # 60 minutes default light runtime
 
         # Status/fault outputs
@@ -962,11 +962,12 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
         ui_state["_touch_press_ms"] = None
         return
 
-    # Any detected touch resets the idle timer and wakes the display.
-    ui_state["_last_any_touch_ms"] = now_ms
+    # Wake display on any touch; reset idle timer only on real user interaction
+    # (a confirmed button press below) so electrical noise cannot defeat dim/sleep.
     if ui_state.get("_dim_state", "bright") != "bright":
         _set_backlight(BL_FULL_DUTY)
         ui_state["_dim_state"] = "bright"
+        ui_state["_last_any_touch_ms"] = now_ms   # wake-tap counts as activity
         # Swallow this touch so a sleep-tap never triggers a button.
         ui_state["touch_button"] = None
         ui_state["_touch_press_ms"] = None
@@ -977,6 +978,7 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
     if TOUCH_DEBUG:
         print("HIT x=%d y=%d -> %s" % (x, y, button if button else "MISS"))
     if button is None:
+        # Phantom / dead-zone touch — don't reset idle timer.
         ui_state["touch_button"] = None
         ui_state["_touch_press_ms"] = None
         return
@@ -1079,6 +1081,9 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
             _update_setpoint_display(lcd, ctrl, ui_state)
             handled = True
 
+    # Confirmed button press → reset idle timer and spa run timer.
+    ui_state["_last_any_touch_ms"] = now_ms
+    ctrl._run_timer_start_ms = None   # restart 4-hour safety window on each HMI interaction
     ui_state["last_touch_ms"] = now_ms
     if handled:
         ui_state["_dynamic_key"] = None
