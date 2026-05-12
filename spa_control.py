@@ -393,9 +393,9 @@ TIMER_LIGHT_POS   = (0, 0)
 # ── Touch button rects (x, y, w, h) ──────────────────────────────────────────
 # Controls-panel y-values shifted up 28 px (title bar removed).
 UI_BUTTONS = {
-    # Temperature panel – round 3D buttons, r=32, centres (70,237) and (211,237)
-    "setpoint_minus": (38, 205, 64, 64),
-    "setpoint_plus":  (179, 205, 64, 64),
+    # Temperature panel – rounded-rect buttons W=120 H=58 r=14
+    "setpoint_minus": (10,  208, 120, 58),
+    "setpoint_plus":  (152, 208, 120, 58),
     # Controls panel – PUMP 1 (three-state)
     "pump_off":  (286, 36, 58, 32),
     "pump_low":  (350, 36, 58, 32),
@@ -533,21 +533,37 @@ def init_hmi():
 # ── Modern 5 × 7 pixel-font helpers ──────────────────────────────────────────
 
 def _fill_h_seg(lcd, x, y, w, t, d, color):
-    """Horizontal 7-segment element with hexagonal (angled) ends."""
-    for dy in range(t):
-        ind = max(0, d - min(dy, t - 1 - dy))
-        sw = w - ind * 2
+    """Horizontal segment with angled ends.  Flat middle batched to one fill_rect."""
+    for dy in range(d):                         # top taper
+        ind = d - dy
+        sw = w - 2 * ind
         if sw > 0:
             lcd.fill_rect(x + ind, y + dy, sw, 1, color)
+    mid = t - 2 * d
+    if mid > 0:                                 # flat middle (one rect, biggest win)
+        lcd.fill_rect(x, y + d, w, mid, color)
+    for dy in range(d):                         # bottom taper
+        ind = dy + 1
+        sw = w - 2 * ind
+        if sw > 0:
+            lcd.fill_rect(x + ind, y + t - d + dy, sw, 1, color)
 
 
 def _fill_v_seg(lcd, x, y, h, t, d, color):
-    """Vertical 7-segment element with hexagonal (angled) ends."""
-    for dy in range(h):
-        ind = max(0, d - min(dy, h - 1 - dy))
-        sw = t - ind * 2
+    """Vertical segment with angled ends.  Flat middle batched to one fill_rect."""
+    for dy in range(d):                         # top taper
+        ind = d - dy
+        sw = t - 2 * ind
         if sw > 0:
             lcd.fill_rect(x + ind, y + dy, sw, 1, color)
+    mid = h - 2 * d
+    if mid > 0:                                 # flat middle (one rect)
+        lcd.fill_rect(x, y + d, t, mid, color)
+    for dy in range(d):                         # bottom taper
+        ind = dy + 1
+        sw = t - 2 * ind
+        if sw > 0:
+            lcd.fill_rect(x + ind, y + h - d + dy, sw, 1, color)
 
 
 def _draw_digit_7seg(lcd, d, x, y, W, H, fg, bg):
@@ -613,40 +629,32 @@ def _draw_led(lcd, x, y, color):
     lcd.fill_rect(x + 2, y + 2, 8, 8, color)
 
 
-def _fill_circle(lcd, cx, cy, r, color):
-    """Fill a solid circle using horizontal scanlines."""
+def _fill_round_rect(lcd, x, y, w, h, r, color):
+    """
+    Fill a rounded rectangle with corner radius r.
+    Straight sides are perfectly crisp; only the small corner arcs use scanlines.
+    """
     r2 = r * r
-    for dy in range(-r, r + 1):
-        dx = int((r2 - dy * dy) ** 0.5)
-        if dx >= 0:
-            lcd.hline(cx - dx, cy + dy, 2 * dx + 1, color)
+    for dy in range(r):                                    # top arc (r rows)
+        ind = r - int((r2 - (r - 1 - dy) ** 2) ** 0.5)
+        lcd.fill_rect(x + ind, y + dy, w - 2 * ind, 1, color)
+    if h > 2 * r:
+        lcd.fill_rect(x, y + r, w, h - 2 * r, color)      # flat middle
+    for dy in range(r):                                    # bottom arc (r rows)
+        ind = r - int((r2 - dy ** 2) ** 0.5)
+        lcd.fill_rect(x + ind, y + h - r + dy, w - 2 * ind, 1, color)
 
 
-def _draw_3d_round_btn(lcd, cx, cy, r, symbol):
-    """
-    Draw a 3D raised circular button with a thick + or - symbol.
-
-    Layer stack (bottom to top):
-      1. Drop shadow  – dark circle offset (3, 3)
-      2. Bright rim   – light grey circle at (-1, -1): shows as top-left crescent
-      3. Dark rim     – dark circle at (+1, +1): covers most of layer 2
-      4. Button face  – solid fill, inset by 3 px
-      5. Gloss spot   – small bright circle in upper-left quadrant
-      6. Symbol bars  – thick white + or -
-    """
-    _fill_circle(lcd, cx + 3, cy + 3, r,     0x0841)   # drop shadow
-    _fill_circle(lcd, cx - 1, cy - 1, r,     0xBDF7)   # bright rim
-    _fill_circle(lcd, cx + 1, cy + 1, r,     0x2965)   # dark rim
-    _fill_circle(lcd, cx,     cy,     r - 3, 0x5AEB)   # button face
-    _fill_circle(lcd, cx - r // 5, cy - r // 3, r // 4, 0x9CF3)  # gloss
-
-    arm   = r // 2           # half-length of symbol arms
-    thick = max(4, r // 5)   # bar thickness
-    # Horizontal bar (both + and -)
-    lcd.fill_rect(cx - arm, cy - thick // 2, 2 * arm + 1, thick, 0xFFFF)
+def _draw_round_btn(lcd, x, y, w, h, r, symbol):
+    """Flat rounded-rectangle setpoint button with a thick +/- symbol."""
+    _fill_round_rect(lcd, x, y, w, h, r, 0x528A)    # button body (medium steel)
+    cx = x + w // 2
+    cy = y + h // 2
+    arm   = min(w, h) // 4
+    thick = max(5, min(w, h) // 6)
+    lcd.fill_rect(cx - arm, cy - thick // 2, 2 * arm + 1, thick, 0xFFFF)   # horiz
     if symbol == "+":
-        # Vertical bar
-        lcd.fill_rect(cx - thick // 2, cy - arm, thick, 2 * arm + 1, 0xFFFF)
+        lcd.fill_rect(cx - thick // 2, cy - arm, thick, 2 * arm + 1, 0xFFFF)  # vert
 
 
 def _draw_button_v2(lcd, rect, label, active=False, act_color=0x0492):
@@ -690,9 +698,9 @@ def _draw_static_frame(lcd):
     lcd.fill_rect(_PNL_T_X, 130, _tw, 1, C_BORDER)   # below label
     # [setpoint digits occupy y = 136 … 191]
     lcd.fill_rect(_PNL_T_X, 200, _tw, 1, C_BORDER)   # above +/- buttons
-    # Round 3-D buttons – centres at (70, 237) and (211, 237), r = 32
-    _draw_3d_round_btn(lcd, 70,  237, 32, "-")
-    _draw_3d_round_btn(lcd, 211, 237, 32, "+")
+    # Rounded-rectangle setpoint buttons: W=120 H=58 corner-r=14
+    _draw_round_btn(lcd, 10,  208, 120, 58, 14, "-")
+    _draw_round_btn(lcd, 152, 208, 120, 58, 14, "+")
 
     # ── Controls panel ────────────────────────────────────────────────────────
     lcd.text("PUMP 1",      357, 8,   C_LABEL)
@@ -776,12 +784,14 @@ def _touch_button_at(x, y):
     return None
 
 
-def _update_setpoint_display(lcd, ctrl):
+def _update_setpoint_display(lcd, ctrl, ui_state=None):
     if lcd is None:
         return
     _draw_temp_int(lcd, ctrl.temp_setpoint_f, _BIG_SP_X, _BIG_SP_Y, _SP_SCALE, C_SP_ON, C_BG)
     lcd.fill_rect(_SP_DEG_X, _BIG_SP_Y, 20, 12, C_BG)
     lcd.text("oF", _SP_DEG_X, _BIG_SP_Y + 2, C_LABEL)
+    if ui_state is not None:
+        ui_state["_c_sp"] = ctrl.temp_setpoint_f  # keep cache in sync
 
 
 def _remaining_seconds(active, start_ms, duration_ms, now_ms):
@@ -861,7 +871,7 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
         )
         if new_setpoint_f != ctrl.temp_setpoint_f:
             ctrl.temp_setpoint_f = new_setpoint_f
-            _update_setpoint_display(lcd, ctrl)
+            _update_setpoint_display(lcd, ctrl, ui_state)
             handled = True
     elif button == "setpoint_plus":
         new_setpoint_f = min(
@@ -870,7 +880,7 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
         )
         if new_setpoint_f != ctrl.temp_setpoint_f:
             ctrl.temp_setpoint_f = new_setpoint_f
-            _update_setpoint_display(lcd, ctrl)
+            _update_setpoint_display(lcd, ctrl, ui_state)
             handled = True
 
     ui_state["last_touch_ms"] = now_ms
@@ -970,55 +980,61 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
     fault     = bool(outputs.get("xFault"))
     fc        = int(outputs.get("iFaultCode", 0))
 
-    # ── Temperature panel: water temp and setpoint ───────────────────────────
-    _draw_temp_int(lcd, inputs.get("rWaterTemp_F"), _BIG_TEMP_X, _BIG_TEMP_Y,
-                   _TEMP_SCALE, C_SEG_ON, C_BG)
-    lcd.fill_rect(_TEMP_DEG_X, _BIG_TEMP_Y, 16, 10, C_BG)
-    lcd.text("oF", _TEMP_DEG_X, _BIG_TEMP_Y + 4, C_LABEL)
+    # ── Water temperature (only redraws when the integer value changes) ───────
+    wt_raw = inputs.get("rWaterTemp_F")
+    wt_i   = int(round(wt_raw)) if wt_raw is not None else None
+    if wt_i != ui_state.get("_c_wt"):
+        ui_state["_c_wt"] = wt_i
+        _draw_temp_int(lcd, wt_raw, _BIG_TEMP_X, _BIG_TEMP_Y,
+                       _TEMP_SCALE, C_SEG_ON, C_BG)
+        lcd.fill_rect(_TEMP_DEG_X, _BIG_TEMP_Y, 20, 12, C_BG)
+        lcd.text("oF", _TEMP_DEG_X, _BIG_TEMP_Y + 4, C_LABEL)
 
-    _draw_temp_int(lcd, ctrl.temp_setpoint_f, _BIG_SP_X, _BIG_SP_Y,
-                   _SP_SCALE, C_SP_ON, C_BG)
-    lcd.fill_rect(_SP_DEG_X, _BIG_SP_Y, 16, 10, C_BG)
-    lcd.text("oF", _SP_DEG_X, _BIG_SP_Y + 2, C_LABEL)
+    # ── Setpoint (only redraws when value changes) ────────────────────────────
+    sp = ctrl.temp_setpoint_f
+    if sp != ui_state.get("_c_sp"):
+        ui_state["_c_sp"] = sp
+        _draw_temp_int(lcd, sp, _BIG_SP_X, _BIG_SP_Y,
+                       _SP_SCALE, C_SP_ON, C_BG)
+        lcd.fill_rect(_SP_DEG_X, _BIG_SP_Y, 20, 12, C_BG)
+        lcd.text("oF", _SP_DEG_X, _BIG_SP_Y + 2, C_LABEL)
 
-    # ── Status bar LEDs (bottom horizontal strip) ────────────────────────────
-    # Slot centres at x = 60, 180, 300, 420 (120-px slots).
-    # LED top-left offset: centre – (12+4+label_w)//2
-    _sb_led_y = _STATUS_BAR_Y + (_STATUS_BAR_H - 12) // 2   # vertically centred
-    heat_led = C_LED_AM if heater_on else (C_LED_GN if heat_req else C_LED_OFF)
-    _draw_led(lcd,  36, _sb_led_y, heat_led)
-    _draw_led(lcd, 156, _sb_led_y, C_LED_CY if pump_on   else C_LED_OFF)
-    _draw_led(lcd, 276, _sb_led_y, C_LED_YE if light_req else C_LED_OFF)
-    _draw_led(lcd, 392, _sb_led_y, C_FAULT  if fault     else C_LED_OFF)
+    # ── Status bar LEDs (only redraws when any status changes) ───────────────
+    _sb_led_y = _STATUS_BAR_Y + (_STATUS_BAR_H - 12) // 2
+    heat_led  = C_LED_AM if heater_on else (C_LED_GN if heat_req else C_LED_OFF)
+    led_key   = (heat_led, pump_on, light_req, fault, fc)
+    if led_key != ui_state.get("_c_led"):
+        ui_state["_c_led"] = led_key
+        _draw_led(lcd,  36, _sb_led_y, heat_led)
+        _draw_led(lcd, 156, _sb_led_y, C_LED_CY if pump_on   else C_LED_OFF)
+        _draw_led(lcd, 276, _sb_led_y, C_LED_YE if light_req else C_LED_OFF)
+        _draw_led(lcd, 392, _sb_led_y, C_FAULT  if fault     else C_LED_OFF)
+        _sb_ty = _STATUS_BAR_Y + (_STATUS_BAR_H - 8) // 2
+        if fault:
+            lcd.fill_rect(408, _sb_ty - 1, 56, 10, C_PANEL)
+            lcd.text("FC:%d" % fc, 408, _sb_ty, C_FAULT)
+        else:
+            lcd.fill_rect(408, _sb_ty - 1, 56, 10, C_PANEL)
+            lcd.text("FAULT", 408, _sb_ty, C_LABEL)
 
-    # Fault code – replaces "FAULT" label text when active
-    _sb_ty = _STATUS_BAR_Y + (_STATUS_BAR_H - 8) // 2
-    if fault:
-        lcd.fill_rect(408, _sb_ty - 1, 56, 10, C_PANEL)
-        lcd.text("FC:%d" % fc, 408, _sb_ty, C_FAULT)
-    else:
-        lcd.fill_rect(408, _sb_ty - 1, 56, 10, C_PANEL)
-        lcd.text("FAULT", 408, _sb_ty, C_LABEL)
-
-    # ── Controls panel: PUMP 1 buttons ───────────────────────────────────────
-    _draw_button_v2(lcd, UI_BUTTONS["pump_off"],  "OFF",
-                    active=(pump_mode == 0), act_color=C_BTN_P_AC)
-    _draw_button_v2(lcd, UI_BUTTONS["pump_low"],  "LOW",
-                    active=(pump_mode == 1), act_color=C_BTN_P_AC)
-    _draw_button_v2(lcd, UI_BUTTONS["pump_high"], "HI",
-                    active=(pump_mode == 2), act_color=C_BTN_P_AC)
-
-    # ── Controls panel: PUMP 2 & 3 toggles ───────────────────────────────────
-    _draw_button_v2(lcd, UI_BUTTONS["pump2"], "PUMP 2",
-                    active=pump2_on, act_color=C_BTN_P_AC)
-    _draw_button_v2(lcd, UI_BUTTONS["pump3"], "PUMP 3",
-                    active=pump3_on, act_color=C_BTN_P_AC)
-
-    # ── Controls panel: heat & light buttons ─────────────────────────────────
-    _draw_button_v2(lcd, UI_BUTTONS["heat"],  "HEAT",
-                    active=heat_req,  act_color=C_BTN_H_AC)
-    _draw_button_v2(lcd, UI_BUTTONS["light"], "LIGHT",
-                    active=light_req, act_color=C_BTN_L_AC)
+    # ── Controls panel buttons (only redraws when state changes) ─────────────
+    btn_key = (pump_mode, pump2_on, pump3_on, heat_req, light_req)
+    if btn_key != ui_state.get("_c_btn"):
+        ui_state["_c_btn"] = btn_key
+        _draw_button_v2(lcd, UI_BUTTONS["pump_off"],  "OFF",
+                        active=(pump_mode == 0), act_color=C_BTN_P_AC)
+        _draw_button_v2(lcd, UI_BUTTONS["pump_low"],  "LOW",
+                        active=(pump_mode == 1), act_color=C_BTN_P_AC)
+        _draw_button_v2(lcd, UI_BUTTONS["pump_high"], "HI",
+                        active=(pump_mode == 2), act_color=C_BTN_P_AC)
+        _draw_button_v2(lcd, UI_BUTTONS["pump2"], "PUMP 2",
+                        active=pump2_on, act_color=C_BTN_P_AC)
+        _draw_button_v2(lcd, UI_BUTTONS["pump3"], "PUMP 3",
+                        active=pump3_on, act_color=C_BTN_P_AC)
+        _draw_button_v2(lcd, UI_BUTTONS["heat"],  "HEAT",
+                        active=heat_req,  act_color=C_BTN_H_AC)
+        _draw_button_v2(lcd, UI_BUTTONS["light"], "LIGHT",
+                        active=light_req, act_color=C_BTN_L_AC)
 
 
 def render_hmi(lcd, inputs, outputs, ctrl, ui_state, full=False):
@@ -1031,6 +1047,9 @@ def render_hmi(lcd, inputs, outputs, ctrl, ui_state, full=False):
             lcd.fill(C_BG)
             _draw_static_frame(lcd)
             ui_state["_hmi_initialized"] = True
+            # Force all dynamic regions to repaint after a full wipe
+            for k in ("_c_wt", "_c_sp", "_c_led", "_c_btn"):
+                ui_state.pop(k, None)
         _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state)
         if hasattr(lcd, "show"):
             lcd.show()
