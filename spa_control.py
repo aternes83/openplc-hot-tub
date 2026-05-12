@@ -935,7 +935,11 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
         ui_state["xHeatRequest"] = not ui_state["xHeatRequest"]
         handled = True
     elif button == "pump_off":
-        if ui_state["pump1_mode"] != 0:
+        # Block OFF when the heater requires water flow for safe operation.
+        wt = ui_state.get("_water_temp_f", 999.0)
+        heat_needs_pump = (ui_state.get("xHeatRequest", False) or
+                           wt < ctrl.temp_setpoint_f)
+        if not heat_needs_pump and ui_state["pump1_mode"] != 0:
             ui_state["pump1_mode"] = 0
             handled = True
     elif button == "pump_low":
@@ -1171,16 +1175,23 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
         remain_m = 0
         mj_label = "MAX JET"
 
-    btn_key = (pump_mode, pump2_on, pump3_on, heat_req, heater_on, light_req,
+    # Reflect actual pump outputs so the display stays honest when the
+    # heater forces Jet 1 LOW regardless of the user's OFF/LOW/HI selection.
+    p1_low_act  = bool(outputs.get("xPump1_Low",  False))
+    p1_high_act = bool(outputs.get("xPump1_High", False))
+    p1_off_act  = not (p1_low_act or p1_high_act)
+
+    btn_key = (p1_off_act, p1_low_act, p1_high_act,
+               pump2_on, pump3_on, heat_req, heater_on, light_req,
                eco_mode, max_jet_on, remain_m)
     if btn_key != ui_state.get("_c_btn"):
         ui_state["_c_btn"] = btn_key
         _draw_button_v2(lcd, UI_BUTTONS["pump_off"],  "OFF",
-                        active=(pump_mode == 0), act_color=C_BTN_P_AC)
+                        active=p1_off_act,  act_color=C_BTN_P_AC)
         _draw_button_v2(lcd, UI_BUTTONS["pump_low"],  "LOW",
-                        active=(pump_mode == 1), act_color=C_BTN_P_AC)
+                        active=p1_low_act,  act_color=C_BTN_P_AC)
         _draw_button_v2(lcd, UI_BUTTONS["pump_high"], "HI",
-                        active=(pump_mode == 2), act_color=C_BTN_P_AC)
+                        active=p1_high_act, act_color=C_BTN_P_AC)
         _draw_button_v2(lcd, UI_BUTTONS["pump2"], "JET 2",
                         active=pump2_on, act_color=C_BTN_P_AC)
         _draw_button_v2(lcd, UI_BUTTONS["pump3"], "JET 3",
@@ -1290,6 +1301,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
     while True:
         raw_inputs = read_inputs()
         raw_inputs["rWaterTemp_F"] = temp_avg.update(raw_inputs.get("rWaterTemp_F", 0.0))
+        ui_state["_water_temp_f"] = raw_inputs["rWaterTemp_F"]
         now = ticks_ms()
         update_touch_ui(touch, ui_state, ctrl, now, lcd)
         inputs = apply_ui_overrides(raw_inputs, ui_state)
