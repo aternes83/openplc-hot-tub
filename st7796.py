@@ -206,7 +206,21 @@ class ST7796:
         self._cmd(_DISPON)
         utime.sleep_ms(120)
 
+        # Enable brightness-control block so WRDISBV (0x51) commands take effect.
+        # WRCTRLD 0x53: BCTRL=1 | DD=1 | BL=1 = 0x2C
+        # WRCABC  0x55: 0x00 = CABC off (manual brightness via WRDISBV)
+        # WRDISBV 0x51: 0xFF = full brightness at startup
+        self._cmd(0x53, b"\x2C")
+        self._cmd(0x55, b"\x00")
+        self._cmd(0x51, b"\xFF")
+
         self.fill(0)
+
+    def set_brightness(self, level):
+        """Set display brightness via WRDISBV register.
+        level: 0 (off) … 255 (max).  Requires WRCTRLD BCTRL bit enabled at init.
+        """
+        self._cmd(0x51, bytearray([max(0, min(255, int(level)))]))
 
     def pixel(self, x, y, color):
         self.fill_rect(x, y, 1, 1, color)

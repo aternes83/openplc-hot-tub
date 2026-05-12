@@ -84,14 +84,36 @@ class RollingAverage:
         return self._total / self._count
 
 
-# ── Backlight PWM handle (set by init_hmi) ───────────────────────────────────
-_hmi_bl_pwm = None
+# ── Backlight / display handles (set by init_hmi) ────────────────────────────
+_hmi_bl_pwm  = None
+_hmi_bl_pin  = None   # keep Pin object alive so GC never de-initialises it
+_hmi_lcd     = None   # ST7796 instance – used by _set_backlight for WRDISBV
 
 
 def _set_backlight(duty_pct):
-    """Set backlight brightness 0–100 %.  No-op when PWM not available."""
+    """Set backlight brightness 0–100 %.
+
+    Uses GPIO PWM (primary) for hardware dimming via transistor on GPIO22,
+    plus ST7796S WRDISBV register for an additional software brightness layer.
+    Falls back to digital on/off if PWM is unavailable.
+    """
+    pct = max(0, min(100, int(duty_pct)))
+
+    # ── GPIO PWM (primary hardware control) ──────────────────────────────────
     if _hmi_bl_pwm is not None:
-        _hmi_bl_pwm.duty_u16(max(0, min(65535, duty_pct * 655)))
+        _hmi_bl_pwm.duty_u16(int(max(0, min(65535, pct * 655))))
+
+    # ── Digital on/off fallback ───────────────────────────────────────────────
+    elif _hmi_bl_pin is not None:
+        _hmi_bl_pin.value(0 if pct == 0 else 1)
+
+    # ── ST7796S software brightness (supplemental) ────────────────────────────
+    if _hmi_lcd is not None and hasattr(_hmi_lcd, "set_brightness"):
+        level = 0 if pct == 0 else max(10, pct * 255 // 100)
+        try:
+            _hmi_lcd.set_brightness(level)
+        except Exception:
+            pass
 
 
 class OnDelay:
@@ -336,7 +358,11 @@ OUT = {name: Pin(gpio, Pin.OUT, value=0) for name, gpio in OUTPUT_PINS.items()}
 # Display SPI bus (shared with touch):
 #   SCK=GPIO42, MOSI=GPIO47, MISO=GPIO48
 # LCD control:
-#   CS=GPIO2, DC=GPIO1, RST=GPIO3, BL=GPIO44
+#   CS=GPIO2, DC=GPIO1, RST=GPIO3
+#   BL=GPIO22  (NPN transistor gate; GPIO22 HIGH = backlight ON)
+#   Note: the module's LED pin was originally wired directly to 5V (no dimming).
+#         A transistor has been added between GPIO22 and the LED cathode so that
+#         PWM on GPIO22 now gives full brightness control.
 # Touch control:
 #   CS=GPIO43, IRQ=GPIO45 (GPIO45 is input-only on ESP32-S3, good for IRQ)
 DISPLAY_PINS = {
@@ -346,7 +372,7 @@ DISPLAY_PINS = {
     "LCD_CS": 2,
     "LCD_DC": 1,
     "LCD_RST": 3,
-    "LCD_BL": 44,
+    "LCD_BL": 22,
     "TOUCH_CS": 43,
     "TOUCH_IRQ": 45,
 }
@@ -521,7 +547,7 @@ def init_hmi():
     Initialize Hosyond ST7796S LCD and XPT2046 touch if drivers exist.
     Returns (display, touch). Either value may be None.
     """
-    global _hmi_lcd_cs, _hmi_bl_pwm
+    global _hmi_lcd_cs, _hmi_bl_pwm, _hmi_bl_pin, _hmi_lcd
     spi = SPI(
         1,
         baudrate=DISPLAY_SPI_BAUDRATE,
@@ -540,14 +566,24 @@ def init_hmi():
     lcd_dc = Pin(DISPLAY_PINS["LCD_DC"], Pin.OUT, value=1)
     lcd_rst = Pin(DISPLAY_PINS["LCD_RST"], Pin.OUT, value=1)
     # Backlight: use PWM for dimming support; fall back to digital if PWM fails.
+    # _hmi_bl_pin is kept as a module global so the Pin object is never GC'd.
     try:
-        bl_pin = Pin(DISPLAY_PINS["LCD_BL"], Pin.OUT)
-        _hmi_bl_pwm = PWM(bl_pin, freq=BL_FREQ_HZ, duty_u16=0 if DISPLAY_BL_ACTIVE_LOW else 65535)
+        _hmi_bl_pin = Pin(DISPLAY_PINS["LCD_BL"], Pin.OUT)
+        _hmi_bl_pwm = PWM(_hmi_bl_pin, freq=BL_FREQ_HZ, duty_u16=0 if DISPLAY_BL_ACTIVE_LOW else 65535)
+        _log_hmi("HMI: BL PWM init ok gpio=%s freq=%s duty=%s" % (
+            DISPLAY_PINS["LCD_BL"], BL_FREQ_HZ,
+            _hmi_bl_pwm.duty_u16()))
+        try:
+            with open(_BL_LOG, "w") as _f:
+                _f.write("init ok gpio=%s freq=%s duty=%s\n" % (
+                    DISPLAY_PINS["LCD_BL"], BL_FREQ_HZ, _hmi_bl_pwm.duty_u16()))
+        except Exception:
+            pass
     except Exception as err:
         _hmi_bl_pwm = None
         _report_hmi_error("HMI: backlight PWM init failed", err)
         # Hard digital fallback
-        Pin(DISPLAY_PINS["LCD_BL"], Pin.OUT, value=0 if DISPLAY_BL_ACTIVE_LOW else 1)
+        _hmi_bl_pin = Pin(DISPLAY_PINS["LCD_BL"], Pin.OUT, value=0 if DISPLAY_BL_ACTIVE_LOW else 1)
 
     try:
         import st7796  # type: ignore
@@ -566,6 +602,7 @@ def init_hmi():
                     dc=lcd_dc,
                     rotation=1,
                 )
+                _hmi_lcd = lcd
                 _log_hmi("HMI: ST7796 init ok (%sx%s)" % (lcd.width, lcd.height))
             except Exception as err:
                 _report_hmi_error("HMI: ST7796 init failed", err)
