@@ -214,9 +214,9 @@ class SpaController:
             and (r_water_temp_f <= self.max_safe_temp_f)
         )
 
-        # Auto-heat: heat is always requested when water is below the setpoint,
-        # regardless of the manual heat button, so temperature is maintained.
-        x_heat_active = x_heat_request or (r_water_temp_f < self.temp_setpoint_f)
+        # Auto-heat: activate whenever water is below setpoint.
+        # x_heat_request is kept for compatibility but no longer gates this path.
+        x_heat_active = r_water_temp_f < self.temp_setpoint_f
 
         # Pump 1 two-speed interlock: high overrides low.
         x_pump1_high = x_permissive and x_pump1_high_request
