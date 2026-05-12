@@ -784,6 +784,29 @@ def _draw_bt_icon(lcd, x, y, color):
     lcd.fill_rect(x,     y + 8, 2, 2,  color)
 
 
+def _draw_lightbulb(lcd, cx, cy, color):
+    """
+    Draw a light-bulb icon centred at (cx, cy).
+    Bounding box: 16 × 22 px.
+    Upper half = glass dome; lower half = threaded base (3 bands).
+    """
+    x = cx - 8   # left edge
+    y = cy - 11  # top edge
+    # --- glass dome ---
+    lcd.fill_rect(x + 4, y,      8, 1, color)   # tip
+    lcd.fill_rect(x + 2, y + 1, 12, 1, color)
+    lcd.fill_rect(x + 1, y + 2, 14, 4, color)   # wide body
+    lcd.fill_rect(x + 2, y + 6, 12, 1, color)
+    lcd.fill_rect(x + 4, y + 7,  8, 1, color)   # bottom of dome
+    # --- neck ---
+    lcd.fill_rect(x + 5, y + 8,  6, 2, color)
+    # --- base bands (threaded cap) ---
+    lcd.fill_rect(x + 3, y + 11, 10, 2, color)  # band 1
+    lcd.fill_rect(x + 3, y + 14, 10, 2, color)  # band 2
+    lcd.fill_rect(x + 3, y + 17, 10, 2, color)  # band 3
+    lcd.fill_rect(x + 4, y + 20,  8, 2, color)  # base cap
+
+
 def _draw_static_frame(lcd):
     """
     Paint all fixed chrome once.
@@ -1261,8 +1284,16 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
                         active=p2_act, act_color=C_BTN_P_AC)
         _draw_button_v2(lcd, UI_BUTTONS["pump3"], "JET 3",
                         active=p3_act, act_color=C_BTN_P_AC)
-        _draw_button_v2(lcd, UI_BUTTONS["light"], "LIGHT",
-                        active=light_req, act_color=C_BTN_L_AC)
+        # Light button – draw bevel background then centred bulb icon
+        _bx, _by, _bw, _bh = UI_BUTTONS["light"]
+        _bbg = C_BTN_L_AC if light_req else C_BTN_NORM
+        lcd.fill_rect(_bx, _by, _bw, _bh, _bbg)
+        _bhi = C_ACCENT if light_req else C_BORDER
+        lcd.fill_rect(_bx,          _by,          _bw, 1,   _bhi)   # top
+        lcd.fill_rect(_bx,          _by,          1,   _bh, _bhi)   # left
+        lcd.fill_rect(_bx,          _by + _bh - 1, _bw, 1,  C_DIM)  # bottom
+        lcd.fill_rect(_bx + _bw - 1, _by,          1,  _bh, C_DIM)  # right
+        _draw_lightbulb(lcd, _bx + _bw // 2, _by + _bh // 2, C_TEXT)
         _draw_button_v2(lcd, UI_BUTTONS["eco"],     "ECO",
                         active=eco_mode,   act_color=0x0640)   # muted green
         _draw_button_v2(lcd, UI_BUTTONS["max_jet"], mj_label,
