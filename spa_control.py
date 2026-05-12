@@ -214,9 +214,13 @@ class SpaController:
             and (r_water_temp_f <= self.max_safe_temp_f)
         )
 
+        # Auto-heat: heat is always requested when water is below the setpoint,
+        # regardless of the manual heat button, so temperature is maintained.
+        x_heat_active = x_heat_request or (r_water_temp_f < self.temp_setpoint_f)
+
         # Pump 1 two-speed interlock: high overrides low.
         x_pump1_high = x_permissive and x_pump1_high_request
-        x_pump1_low = x_permissive and (x_pump_request or x_heat_request) and (not x_pump1_high)
+        x_pump1_low = x_permissive and (x_pump_request or x_heat_active) and (not x_pump1_high)
 
         # Single-speed pumps
         x_pump2 = x_permissive and x_pump2_request
@@ -227,7 +231,7 @@ class SpaController:
         min_run_elapsed = self._pump_min_run.update(x_any_pump)
 
         x_heater = self._thermostat.update(
-            enable=(x_permissive and x_heat_request),
+            enable=(x_permissive and x_heat_active),
             temp_f=r_water_temp_f,
             setpoint_f=self.temp_setpoint_f,
             hysteresis_f=self.temp_hysteresis_f,
