@@ -46,7 +46,7 @@ Firmware: `spa_control.py`
 | `LCD_CS` | 2 |
 | `LCD_DC` | 1 |
 | `LCD_RST` | 3 |
-| `LCD_BL` | 22 |
+| `LCD_BL` | 44 |
 | `TOUCH_CS` | 43 |
 | `TOUCH_IRQ` | 45 |
 
@@ -123,7 +123,7 @@ Firmware: `spa_control.py`
 | `LCD_CS` | 2 | LCD chip select |
 | `LCD_DC` | 1 | Data/command |
 | `LCD_RST` | 3 | Hardware reset |
-| `LCD_BL` | 22 | Backlight PWM (NPN transistor gate) |
+| `LCD_BL` | 44 | Backlight control / PWM |
 
 ### Touch Control (XPT2046)
 
@@ -145,7 +145,7 @@ Firmware: `spa_control.py`
 | `DC/RS` | `LCD_DC` |
 | `SDI` | `MOSI` |
 | `SCK` | `SCK` |
-| `LED` | NPN transistor collector (GPIO22 controls gate) |
+| `LED` | `LCD_BL` (GPIO44), or fixed supply per module |
 | `SDO` | `MISO` |
 
 ### XPT2046 Touch Header
@@ -174,7 +174,7 @@ ESP32-S3-DevKitC-1-N8R8
                                    LCD_CS   <- GPIO2
                                    LCD_DC   <- GPIO1
                                    LCD_RST  <- GPIO3
-                                   LCD_LED  <- GPIO22 (via NPN transistor)
+                                   LCD_LED  <- GPIO44
 
                                    T_CLK    <- GPIO42 (shared)
                                    T_DIN    <- GPIO47 (shared)
@@ -192,15 +192,15 @@ The Hosyond module's `LED` pin is wired directly to 5V on the PCB (always-on).
 To enable software brightness control a small NPN transistor is added in-line:
 
 ```text
-GPIO22 ──[470 Ω]──┐
+GPIO44 ──[470 Ω]──┐
                   NPN Base   (e.g. 2N2222 / BC547 / S8050)
 5V ─── LED(+) ─── LED(−) ── NPN Collector
                              NPN Emitter ── GND
 ```
 
-- `GPIO22 HIGH` → transistor ON → backlight on
-- `GPIO22 LOW`  → transistor OFF → backlight off
-- PWM on GPIO22 gives proportional brightness control (1 kHz carrier)
+- `GPIO44 HIGH` → transistor ON → backlight on
+- `GPIO44 LOW`  → transistor OFF → backlight off
+- PWM on GPIO44 gives proportional brightness control (1 kHz carrier)
 - `DISPLAY_BL_ACTIVE_LOW = False` (active-high, matches this circuit)
 
 ## Reserved/Caution Pins (ESP32-S3)

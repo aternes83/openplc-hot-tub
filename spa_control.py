@@ -93,7 +93,7 @@ _hmi_lcd     = None   # ST7796 instance – used by _set_backlight for WRDISBV
 def _set_backlight(duty_pct):
     """Set backlight brightness 0–100 %.
 
-    Uses GPIO PWM (primary) for hardware dimming via transistor on GPIO22,
+    Uses GPIO PWM (primary) for hardware dimming on ``LCD_BL`` (GPIO44),
     plus ST7796S WRDISBV register for an additional software brightness layer.
     Falls back to digital on/off if PWM is unavailable.
     """
@@ -358,11 +358,7 @@ OUT = {name: Pin(gpio, Pin.OUT, value=0) for name, gpio in OUTPUT_PINS.items()}
 # Display SPI bus (shared with touch):
 #   SCK=GPIO42, MOSI=GPIO47, MISO=GPIO48
 # LCD control:
-#   CS=GPIO2, DC=GPIO1, RST=GPIO3
-#   BL=GPIO22  (NPN transistor gate; GPIO22 HIGH = backlight ON)
-#   Note: the module's LED pin was originally wired directly to 5V (no dimming).
-#         A transistor has been added between GPIO22 and the LED cathode so that
-#         PWM on GPIO22 now gives full brightness control.
+#   CS=GPIO2, DC=GPIO1, RST=GPIO3, BL=GPIO44
 # Touch control:
 #   CS=GPIO43, IRQ=GPIO45 (GPIO45 is input-only on ESP32-S3, good for IRQ)
 DISPLAY_PINS = {
@@ -372,7 +368,7 @@ DISPLAY_PINS = {
     "LCD_CS": 2,
     "LCD_DC": 1,
     "LCD_RST": 3,
-    "LCD_BL": 22,
+    "LCD_BL": 44,
     "TOUCH_CS": 43,
     "TOUCH_IRQ": 45,
 }
