@@ -1170,11 +1170,11 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
         # Clear the right-hand portion of the top bar
         lcd.fill_rect(370, 0, 106, _TOP_BAR_H - 1, C_PANEL)
         # BT icon (8×10 px) at x=376
-        _draw_bt_icon(lcd, 376, ty, C_LED_CY if bt_con else C_ACCENT)
+        _draw_bt_icon(lcd, 376, ty, C_LABEL)
         # WiFi bars (11×10 px) at x=392
-        _draw_wifi_icon(lcd, 392, ty, C_LED_GN if wifi_con else C_ACCENT)
+        _draw_wifi_icon(lcd, 392, ty, C_LABEL)
         # Time "HH:MM" at x=410
-        lcd.text(time_str, 410, tt, C_TEXT if time_str != "--:--" else C_ACCENT)
+        lcd.text(time_str, 410, tt, C_LABEL)
 
     heat_req  = ui_state["xHeatRequest"]
     light_req = ui_state["xLightRequest"]
@@ -1351,9 +1351,9 @@ def main(loop_ms=CONTROL_LOOP_MS):
         "_hmi_initialized": False,
         "_dynamic_key": None,
         "_timer_key": None,
-        # Top-bar connectivity state (set True when app integration is active)
-        "bt_connected":   False,
-        "wifi_connected": False,
+        # Top-bar connectivity state – TEST: forced on to verify icon layout
+        "bt_connected":   True,
+        "wifi_connected": True,
     }
     raw_inputs = read_inputs()
     raw_inputs["rWaterTemp_F"] = temp_avg.update(raw_inputs.get("rWaterTemp_F", 0.0))
