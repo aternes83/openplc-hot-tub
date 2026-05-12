@@ -460,16 +460,14 @@ UI_BUTTONS = {
     # Controls panel – PUMP 2 & 3 (toggles)
     "pump2": (286, 92, 89, 32),
     "pump3": (383, 92, 89, 32),
-    # Controls panel – heat & light
-    "heat":  (286, 145, 89, 44),
-    "light": (383, 145, 89, 44),
+    # Controls panel – light (full-width, spans former heat+light row)
+    "light": (286, 145, 186, 44),
     # Controls panel – operating modes
     "eco":     (286, 208, 89, 44),
     "max_jet": (383, 208, 89, 44),
 }
 
 TOUCH_BUTTON_ORDER = (
-    "heat",
     "pump_off",
     "pump_low",
     "pump_high",
@@ -777,7 +775,7 @@ def _draw_static_frame(lcd):
     lcd.fill_rect(_PNL_C_X, 72,  _PNL_C_W, 1, C_BORDER)
     lcd.text("JET 2 / 3",   341, 80,  C_LABEL)
     lcd.fill_rect(_PNL_C_X, 128, _PNL_C_W, 1, C_BORDER)
-    lcd.text("HEAT / LIGHT", 333, 136, C_LABEL)
+    lcd.text("LIGHT",        361, 136, C_LABEL)
     lcd.fill_rect(_PNL_C_X, 192, _PNL_C_W, 1, C_BORDER)
     lcd.text("MODES",        361, 196, C_LABEL)
 
@@ -931,14 +929,10 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
         return
 
     handled = False
-    if button == "heat":
-        ui_state["xHeatRequest"] = not ui_state["xHeatRequest"]
-        handled = True
-    elif button == "pump_off":
+    if button == "pump_off":
         # Block OFF when the heater requires water flow for safe operation.
         wt = ui_state.get("_water_temp_f", 999.0)
-        heat_needs_pump = (ui_state.get("xHeatRequest", False) or
-                           wt < ctrl.temp_setpoint_f)
+        heat_needs_pump = wt < ctrl.temp_setpoint_f
         if not heat_needs_pump and ui_state["pump1_mode"] != 0:
             ui_state["pump1_mode"] = 0
             handled = True
@@ -1182,7 +1176,7 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
     p1_off_act  = not (p1_low_act or p1_high_act)
 
     btn_key = (p1_off_act, p1_low_act, p1_high_act,
-               pump2_on, pump3_on, heat_req, heater_on, light_req,
+               pump2_on, pump3_on, light_req,
                eco_mode, max_jet_on, remain_m)
     if btn_key != ui_state.get("_c_btn"):
         ui_state["_c_btn"] = btn_key
@@ -1196,8 +1190,6 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
                         active=pump2_on, act_color=C_BTN_P_AC)
         _draw_button_v2(lcd, UI_BUTTONS["pump3"], "JET 3",
                         active=pump3_on, act_color=C_BTN_P_AC)
-        _draw_button_v2(lcd, UI_BUTTONS["heat"],  "HEAT",
-                        active=(heat_req or heater_on), act_color=C_BTN_H_AC)
         _draw_button_v2(lcd, UI_BUTTONS["light"], "LIGHT",
                         active=light_req, act_color=C_BTN_L_AC)
         _draw_button_v2(lcd, UI_BUTTONS["eco"],     "ECO",
@@ -1270,7 +1262,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
         except Exception as err:
             _report_hmi_error("HMI: splash failed", err)
     ui_state = {
-        "xHeatRequest": False,
+        "xHeatRequest": True,   # permanently armed; no UI toggle
         "xLightRequest": False,
         "pump1_mode": 1,        # 0=off, 1=low, 2=high
         "pump2_on": False,
