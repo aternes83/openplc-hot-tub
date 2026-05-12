@@ -154,7 +154,7 @@ class SpaController:
     def __init__(self):
         # Tunables (Fahrenheit)
         self.temp_setpoint_f = 100.0
-        self.temp_hysteresis_f = 0.0
+        self.temp_hysteresis_f = 0.5
         self.max_safe_temp_f = 105.0
         self.flow_prove_ms = 10_000
         self.pump_preheat_ms = 30_000
