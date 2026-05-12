@@ -225,12 +225,25 @@ class ST7796:
         else:
             self._fb_line(x1, y1, x2, y2, color)
 
+    @staticmethod
+    def _swap_bytes(color):
+        """Swap high and low bytes of a 16-bit colour.
+
+        framebuf.RGB565 stores each pixel as a native uint16_t, which on the
+        little-endian ESP32 means the low byte is written to memory first.
+        _draw_buffer then streams those bytes directly over SPI.  The ST7796
+        expects big-endian (high byte first), so every colour passed into a
+        FrameBuffer must be byte-swapped so the bytes land in the right order
+        on the wire.
+        """
+        return ((color & 0xFF) << 8) | (color >> 8)
+
     def _fb_line(self, x1, y1, x2, y2, color):
         w = abs(x2 - x1) + 1
         h = abs(y2 - y1) + 1
         buf = bytearray(w * h * 2)
         fb = framebuf.FrameBuffer(buf, w, h, framebuf.RGB565)
-        fb.line(x1 - min(x1, x2), y1 - min(y1, y2), x2 - min(x1, x2), y2 - min(y1, y2), color)
+        fb.line(x1 - min(x1, x2), y1 - min(y1, y2), x2 - min(x1, x2), y2 - min(y1, y2), self._swap_bytes(color))
         self._draw_buffer(min(x1, x2), min(y1, y2), w, h, buf)
 
     def rect(self, x, y, w, h, color):
@@ -256,7 +269,7 @@ class ST7796:
         buf = bytearray(w * h * 2)
         fb = framebuf.FrameBuffer(buf, w, h, framebuf.RGB565)
         fb.fill(0)
-        fb.text(s, 0, 0, color)
+        fb.text(s, 0, 0, self._swap_bytes(color))
         self._draw_buffer(x, y, w, h, buf)
 
     def show(self):
