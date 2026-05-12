@@ -1171,7 +1171,7 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
         remain_m = 0
         mj_label = "MAX JET"
 
-    btn_key = (pump_mode, pump2_on, pump3_on, heat_req, light_req,
+    btn_key = (pump_mode, pump2_on, pump3_on, heat_req, heater_on, light_req,
                eco_mode, max_jet_on, remain_m)
     if btn_key != ui_state.get("_c_btn"):
         ui_state["_c_btn"] = btn_key
@@ -1186,7 +1186,7 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
         _draw_button_v2(lcd, UI_BUTTONS["pump3"], "JET 3",
                         active=pump3_on, act_color=C_BTN_P_AC)
         _draw_button_v2(lcd, UI_BUTTONS["heat"],  "HEAT",
-                        active=heat_req,  act_color=C_BTN_H_AC)
+                        active=(heat_req or heater_on), act_color=C_BTN_H_AC)
         _draw_button_v2(lcd, UI_BUTTONS["light"], "LIGHT",
                         active=light_req, act_color=C_BTN_L_AC)
         _draw_button_v2(lcd, UI_BUTTONS["eco"],     "ECO",
