@@ -156,8 +156,8 @@ class SpaController:
         self.temp_setpoint_f = 100.0
         self.temp_hysteresis_f = 0.5
         self.max_safe_temp_f = 105.0
-        self.flow_prove_ms = 10_000
-        self.pump_preheat_ms = 30_000
+        self.flow_prove_ms = 5_000
+        self.pump_preheat_ms = 5_000
         self.default_run_ms = 20 * 60 * 1000  # 20 minutes default spa runtime
         self.light_run_ms = 60 * 60 * 1000  # 60 minutes default light runtime
 
