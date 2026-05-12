@@ -434,6 +434,10 @@ UI_LIMITS = {
     "SETPOINT_STEP_F": 1.0,
 }
 
+# ── Special operating modes ───────────────────────────────────────────────────
+ECO_SETPOINT_F      = 80.0           # temp target while ECO mode is active
+MAX_JET_DURATION_MS = 20 * 60 * 1000 # 20-minute MAX JET auto-off
+
 # Timer stubs (run-timers section removed from UI; kept so dead code doesn't NameError)
 TIMER_LABEL_WIDTH = 0
 TIMER_SPA_POS     = (0, 0)
@@ -455,6 +459,9 @@ UI_BUTTONS = {
     # Controls panel – heat & light
     "heat":  (286, 145, 89, 44),
     "light": (383, 145, 89, 44),
+    # Controls panel – operating modes
+    "eco":     (286, 208, 89, 44),
+    "max_jet": (383, 208, 89, 44),
 }
 
 TOUCH_BUTTON_ORDER = (
@@ -465,6 +472,8 @@ TOUCH_BUTTON_ORDER = (
     "pump2",
     "pump3",
     "light",
+    "eco",
+    "max_jet",
     "setpoint_minus",
     "setpoint_plus",
 )
@@ -765,6 +774,8 @@ def _draw_static_frame(lcd):
     lcd.text("JET 2 / 3",   341, 80,  C_LABEL)
     lcd.fill_rect(_PNL_C_X, 128, _PNL_C_W, 1, C_BORDER)
     lcd.text("HEAT / LIGHT", 333, 136, C_LABEL)
+    lcd.fill_rect(_PNL_C_X, 192, _PNL_C_W, 1, C_BORDER)
+    lcd.text("MODES",        361, 196, C_LABEL)
 
     # ── Status bar (bottom horizontal strip) ──────────────────────────────────
     # Four items evenly spaced in 120-px slots (slot centres: 60, 180, 300, 420)
@@ -940,6 +951,40 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
     elif button == "light":
         ui_state["xLightRequest"] = not ui_state["xLightRequest"]
         handled = True
+    elif button == "eco":
+        if ui_state.get("eco_mode"):
+            # Leaving ECO – restore previous setpoint
+            ui_state["eco_mode"] = False
+            prev = ui_state.pop("_eco_prev_sp", None)
+            if prev is not None:
+                ctrl.temp_setpoint_f = prev
+                ui_state.pop("_c_sp", None)   # force setpoint redraw
+        else:
+            # Entering ECO – cancel MAX JET, save setpoint, lock to 80 °F
+            if ui_state.get("max_jet_on"):
+                ui_state["max_jet_on"] = False
+                ui_state["max_jet_start_ms"] = None
+            ui_state["_eco_prev_sp"] = ctrl.temp_setpoint_f
+            ctrl.temp_setpoint_f = ECO_SETPOINT_F
+            ui_state["eco_mode"] = True
+            ui_state.pop("_c_sp", None)
+        handled = True
+    elif button == "max_jet":
+        if ui_state.get("max_jet_on"):
+            # Cancel MAX JET early
+            ui_state["max_jet_on"] = False
+            ui_state["max_jet_start_ms"] = None
+        else:
+            # Start MAX JET – cancel ECO first
+            if ui_state.get("eco_mode"):
+                ui_state["eco_mode"] = False
+                prev = ui_state.pop("_eco_prev_sp", None)
+                if prev is not None:
+                    ctrl.temp_setpoint_f = prev
+                    ui_state.pop("_c_sp", None)
+            ui_state["max_jet_on"] = True
+            ui_state["max_jet_start_ms"] = now_ms
+        handled = True
     elif button == "setpoint_minus":
         new_setpoint_f = max(
             UI_LIMITS["SETPOINT_MIN_F"],
@@ -972,6 +1017,21 @@ def apply_ui_overrides(inputs, ui_state):
     values["xPumpRequest"] = ui_state["pump1_mode"] in (1, 2)
     values["xPump2Request"] = bool(ui_state.get("pump2_on", False))
     values["xPump3Request"] = bool(ui_state.get("pump3_on", False))
+
+    # ECO mode: Jet 1 LOW, Jets 2 & 3 off, setpoint locked to ECO_SETPOINT_F.
+    if ui_state.get("eco_mode"):
+        values["xPumpRequest"]      = True
+        values["xPump1HighRequest"] = False
+        values["xPump2Request"]     = False
+        values["xPump3Request"]     = False
+
+    # MAX JET: all jets on HIGH (overrides ECO if both somehow active).
+    if ui_state.get("max_jet_on"):
+        values["xPumpRequest"]      = True
+        values["xPump1HighRequest"] = True
+        values["xPump2Request"]     = True
+        values["xPump3Request"]     = True
+
     return values
 
 
@@ -1094,7 +1154,21 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
             lcd.text("FAULT", 408, _sb_ty, C_LABEL)
 
     # ── Controls panel buttons (only redraws when state changes) ─────────────
-    btn_key = (pump_mode, pump2_on, pump3_on, heat_req, light_req)
+    eco_mode   = bool(ui_state.get("eco_mode",   False))
+    max_jet_on = bool(ui_state.get("max_jet_on", False))
+
+    # MAX JET countdown label — changes every minute while active.
+    if max_jet_on:
+        elapsed_ms  = ticks_diff(ticks_ms(), ui_state.get("max_jet_start_ms", 0))
+        remain_ms   = max(0, MAX_JET_DURATION_MS - elapsed_ms)
+        remain_m    = (remain_ms + 59999) // 60000   # round up to nearest minute
+        mj_label    = ("%d min" % remain_m) if remain_m > 0 else "< 1m"
+    else:
+        remain_m = 0
+        mj_label = "MAX JET"
+
+    btn_key = (pump_mode, pump2_on, pump3_on, heat_req, light_req,
+               eco_mode, max_jet_on, remain_m)
     if btn_key != ui_state.get("_c_btn"):
         ui_state["_c_btn"] = btn_key
         _draw_button_v2(lcd, UI_BUTTONS["pump_off"],  "OFF",
@@ -1111,6 +1185,10 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
                         active=heat_req,  act_color=C_BTN_H_AC)
         _draw_button_v2(lcd, UI_BUTTONS["light"], "LIGHT",
                         active=light_req, act_color=C_BTN_L_AC)
+        _draw_button_v2(lcd, UI_BUTTONS["eco"],     "ECO",
+                        active=eco_mode,   act_color=0x0640)   # muted green
+        _draw_button_v2(lcd, UI_BUTTONS["max_jet"], mj_label,
+                        active=max_jet_on, act_color=0x7800)   # deep orange
 
 
 def render_hmi(lcd, inputs, outputs, ctrl, ui_state, full=False):
@@ -1182,6 +1260,10 @@ def main(loop_ms=CONTROL_LOOP_MS):
         "pump1_mode": 1,        # 0=off, 1=low, 2=high
         "pump2_on": False,
         "pump3_on": False,
+        "eco_mode": False,
+        "max_jet_on": False,
+        "max_jet_start_ms": None,
+        "_eco_prev_sp": None,
         "touch_button": None,
         "last_touch_ms": 0,
         "_last_any_touch_ms": 0,
@@ -1209,6 +1291,17 @@ def main(loop_ms=CONTROL_LOOP_MS):
         inputs = apply_ui_overrides(raw_inputs, ui_state)
         outputs = ctrl.step(inputs)
         write_outputs(outputs)
+
+        # ── MAX JET auto-off after 20 min ────────────────────────────────────
+        if ui_state["max_jet_on"]:
+            if ticks_diff(now, ui_state["max_jet_start_ms"]) >= MAX_JET_DURATION_MS:
+                ui_state["max_jet_on"] = False
+                ui_state["max_jet_start_ms"] = None
+
+        # ── ECO mode: keep setpoint locked to ECO_SETPOINT_F ─────────────────
+        if ui_state["eco_mode"] and ctrl.temp_setpoint_f != ECO_SETPOINT_F:
+            ctrl.temp_setpoint_f = ECO_SETPOINT_F
+            ui_state.pop("_c_sp", None)
 
         # ── Backlight dim / sleep ─────────────────────────────────────────────
         idle_ms    = ticks_diff(now, ui_state["_last_any_touch_ms"])
