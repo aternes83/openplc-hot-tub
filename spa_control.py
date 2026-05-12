@@ -21,8 +21,14 @@ except ImportError:  # fallback for local simulation
     import time as time_mod
 
 try:
-    from machine import Pin, SPI
+    from machine import Pin, SPI, PWM
 except ImportError:  # local testing stub
+    class PWM:  # type: ignore
+        def __init__(self, pin, freq=1000, duty_u16=65535):
+            pass
+
+        def duty_u16(self, val=None):
+            pass
     class Pin:  # type: ignore
         IN = 0
         OUT = 1
@@ -54,6 +60,38 @@ def ticks_diff(now, then):
     if hasattr(time_mod, "ticks_diff"):
         return time_mod.ticks_diff(now, then)
     return now - then
+
+
+class RollingAverage:
+    """Fixed-length circular-buffer rolling average.  O(1) update, no heap churn."""
+
+    def __init__(self, n):
+        self._buf   = [0.0] * n
+        self._n     = n
+        self._idx   = 0
+        self._count = 0
+        self._total = 0.0
+
+    def update(self, value):
+        v = float(value)
+        if self._count < self._n:
+            self._count += 1
+        else:
+            self._total -= self._buf[self._idx]
+        self._buf[self._idx] = v
+        self._total += v
+        self._idx = (self._idx + 1) % self._n
+        return self._total / self._count
+
+
+# ── Backlight PWM handle (set by init_hmi) ───────────────────────────────────
+_hmi_bl_pwm = None
+
+
+def _set_backlight(duty_pct):
+    """Set backlight brightness 0–100 %.  No-op when PWM not available."""
+    if _hmi_bl_pwm is not None:
+        _hmi_bl_pwm.duty_u16(max(0, min(65535, duty_pct * 655)))
 
 
 class OnDelay:
@@ -324,8 +362,19 @@ TOUCH_SCREEN_OFFSET_Y = 0
 TOUCH_SCREEN_SCALE_X  = 1.0
 TOUCH_SCREEN_SCALE_Y  = 1.0
 TOUCH_DEBUG = False
-TOUCH_REPEAT_MS = 300
-TOUCH_SETPOINT_REPEAT_MS = 150
+TOUCH_DEBOUNCE_MS = 30          # min hold time before a new button fires
+TOUCH_REPEAT_MS = 300           # auto-repeat interval for toggle buttons
+TOUCH_SETPOINT_REPEAT_MS = 150  # auto-repeat interval for setpoint +/-
+
+# ── Sensor averaging ──────────────────────────────────────────────────────────
+TEMP_AVG_N = 8      # rolling-average window (samples × loop period = ~400 ms lag)
+
+# ── Backlight sleep / dim ─────────────────────────────────────────────────────
+BL_FREQ_HZ       = 1000          # PWM carrier frequency
+BL_FULL_DUTY     = 100           # % brightness when active
+BL_DIM_DUTY      = 25            # % brightness when idle
+BL_DIM_TIMEOUT_MS   = 120_000   # 2 min idle → dim
+BL_SLEEP_TIMEOUT_MS = 600_000   # 10 min idle → screen off
 # ── HMI colour palette (RGB565) ──────────────────────────────────────────────
 C_BG       = 0x0820   # deep navy background
 C_PANEL    = 0x1082   # dark panel fill
@@ -445,7 +494,7 @@ def init_hmi():
     Initialize Hosyond ST7796S LCD and XPT2046 touch if drivers exist.
     Returns (display, touch). Either value may be None.
     """
-    global _hmi_lcd_cs
+    global _hmi_lcd_cs, _hmi_bl_pwm
     spi = SPI(
         1,
         baudrate=DISPLAY_SPI_BAUDRATE,
@@ -463,8 +512,15 @@ def init_hmi():
     _hmi_lcd_cs = lcd_cs
     lcd_dc = Pin(DISPLAY_PINS["LCD_DC"], Pin.OUT, value=1)
     lcd_rst = Pin(DISPLAY_PINS["LCD_RST"], Pin.OUT, value=1)
-    lcd_bl = Pin(DISPLAY_PINS["LCD_BL"], Pin.OUT, value=0 if DISPLAY_BL_ACTIVE_LOW else 1)
-    lcd_bl.value(0 if DISPLAY_BL_ACTIVE_LOW else 1)
+    # Backlight: use PWM for dimming support; fall back to digital if PWM fails.
+    try:
+        bl_pin = Pin(DISPLAY_PINS["LCD_BL"], Pin.OUT)
+        _hmi_bl_pwm = PWM(bl_pin, freq=BL_FREQ_HZ, duty_u16=0 if DISPLAY_BL_ACTIVE_LOW else 65535)
+    except Exception as err:
+        _hmi_bl_pwm = None
+        _report_hmi_error("HMI: backlight PWM init failed", err)
+        # Hard digital fallback
+        Pin(DISPLAY_PINS["LCD_BL"], Pin.OUT, value=0 if DISPLAY_BL_ACTIVE_LOW else 1)
 
     try:
         import st7796  # type: ignore
@@ -818,6 +874,17 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
     point = _touch_point(touch)
     if point is None:
         ui_state["touch_button"] = None
+        ui_state["_touch_press_ms"] = None
+        return
+
+    # Any detected touch resets the idle timer and wakes the display.
+    ui_state["_last_any_touch_ms"] = now_ms
+    if ui_state.get("_dim_state", "bright") != "bright":
+        _set_backlight(BL_FULL_DUTY)
+        ui_state["_dim_state"] = "bright"
+        # Swallow this touch so a sleep-tap never triggers a button.
+        ui_state["touch_button"] = None
+        ui_state["_touch_press_ms"] = None
         return
 
     x, y = point
@@ -826,6 +893,18 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
         print("HIT x=%d y=%d -> %s" % (x, y, button if button else "MISS"))
     if button is None:
         ui_state["touch_button"] = None
+        ui_state["_touch_press_ms"] = None
+        return
+
+    if button != ui_state.get("touch_button"):
+        # New button detected — start debounce clock, don't act yet.
+        ui_state["touch_button"]   = button
+        ui_state["_touch_press_ms"] = now_ms
+        return
+
+    # Same button held — enforce initial debounce before the first action.
+    press_ms = ui_state.get("_touch_press_ms")
+    if press_ms is not None and ticks_diff(now_ms, press_ms) < TOUCH_DEBOUNCE_MS:
         return
 
     repeat_ms = (
@@ -833,11 +912,8 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
         if button in ("setpoint_minus", "setpoint_plus")
         else TOUCH_REPEAT_MS
     )
-    if button == ui_state.get("touch_button"):
-        if ticks_diff(now_ms, ui_state.get("last_touch_ms", 0)) < repeat_ms:
-            return
-    else:
-        ui_state["touch_button"] = button
+    if ticks_diff(now_ms, ui_state.get("last_touch_ms", 0)) < repeat_ms:
+        return
 
     handled = False
     if button == "heat":
@@ -1087,6 +1163,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
         pass
 
     ctrl = SpaController()
+    temp_avg = RollingAverage(TEMP_AVG_N)
     lcd, touch = init_hmi()
     if lcd is not None:
         try:
@@ -1102,17 +1179,21 @@ def main(loop_ms=CONTROL_LOOP_MS):
     ui_state = {
         "xHeatRequest": False,
         "xLightRequest": False,
-        "pump1_mode": 1,   # 0=off, 1=low, 2=high
+        "pump1_mode": 1,        # 0=off, 1=low, 2=high
         "pump2_on": False,
         "pump3_on": False,
         "touch_button": None,
         "last_touch_ms": 0,
+        "_last_any_touch_ms": 0,
+        "_touch_press_ms": None,
+        "_dim_state": "bright",  # "bright" | "dim" | "sleep"
         "_render_error_logged": False,
         "_hmi_initialized": False,
         "_dynamic_key": None,
         "_timer_key": None,
     }
     raw_inputs = read_inputs()
+    raw_inputs["rWaterTemp_F"] = temp_avg.update(raw_inputs.get("rWaterTemp_F", 0.0))
     inputs = apply_ui_overrides(raw_inputs, ui_state)
     outputs = ctrl.step(inputs)
     render_hmi(lcd, inputs, outputs, ctrl, ui_state, full=True)
@@ -1122,11 +1203,22 @@ def main(loop_ms=CONTROL_LOOP_MS):
 
     while True:
         raw_inputs = read_inputs()
+        raw_inputs["rWaterTemp_F"] = temp_avg.update(raw_inputs.get("rWaterTemp_F", 0.0))
         now = ticks_ms()
         update_touch_ui(touch, ui_state, ctrl, now, lcd)
         inputs = apply_ui_overrides(raw_inputs, ui_state)
         outputs = ctrl.step(inputs)
         write_outputs(outputs)
+
+        # ── Backlight dim / sleep ─────────────────────────────────────────────
+        idle_ms    = ticks_diff(now, ui_state["_last_any_touch_ms"])
+        dim_state  = ui_state.get("_dim_state", "bright")
+        if dim_state == "bright" and idle_ms >= BL_DIM_TIMEOUT_MS:
+            _set_backlight(BL_DIM_DUTY)
+            ui_state["_dim_state"] = "dim"
+        elif dim_state == "dim" and idle_ms >= BL_SLEEP_TIMEOUT_MS:
+            _set_backlight(0)
+            ui_state["_dim_state"] = "sleep"
         dynamic_key = _dynamic_snapshot(inputs, outputs, ctrl, ui_state)
         if dynamic_key != ui_state["_dynamic_key"]:
             ui_state["_dynamic_key"] = dynamic_key
