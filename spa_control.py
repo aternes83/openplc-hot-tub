@@ -393,9 +393,9 @@ TIMER_LIGHT_POS   = (0, 0)
 # ── Touch button rects (x, y, w, h) ──────────────────────────────────────────
 # Controls-panel y-values shifted up 28 px (title bar removed).
 UI_BUTTONS = {
-    # Temperature panel – setpoint adjust (wider, repositioned for new layout)
-    "setpoint_minus": (6,   208, 134, 56),
-    "setpoint_plus":  (142, 208, 134, 56),
+    # Temperature panel – round 3D buttons, r=32, centres (70,237) and (211,237)
+    "setpoint_minus": (38, 205, 64, 64),
+    "setpoint_plus":  (179, 205, 64, 64),
     # Controls panel – PUMP 1 (three-state)
     "pump_off":  (286, 36, 58, 32),
     "pump_low":  (350, 36, 58, 32),
@@ -613,6 +613,42 @@ def _draw_led(lcd, x, y, color):
     lcd.fill_rect(x + 2, y + 2, 8, 8, color)
 
 
+def _fill_circle(lcd, cx, cy, r, color):
+    """Fill a solid circle using horizontal scanlines."""
+    r2 = r * r
+    for dy in range(-r, r + 1):
+        dx = int((r2 - dy * dy) ** 0.5)
+        if dx >= 0:
+            lcd.hline(cx - dx, cy + dy, 2 * dx + 1, color)
+
+
+def _draw_3d_round_btn(lcd, cx, cy, r, symbol):
+    """
+    Draw a 3D raised circular button with a thick + or - symbol.
+
+    Layer stack (bottom to top):
+      1. Drop shadow  – dark circle offset (3, 3)
+      2. Bright rim   – light grey circle at (-1, -1): shows as top-left crescent
+      3. Dark rim     – dark circle at (+1, +1): covers most of layer 2
+      4. Button face  – solid fill, inset by 3 px
+      5. Gloss spot   – small bright circle in upper-left quadrant
+      6. Symbol bars  – thick white + or -
+    """
+    _fill_circle(lcd, cx + 3, cy + 3, r,     0x0841)   # drop shadow
+    _fill_circle(lcd, cx - 1, cy - 1, r,     0xBDF7)   # bright rim
+    _fill_circle(lcd, cx + 1, cy + 1, r,     0x2965)   # dark rim
+    _fill_circle(lcd, cx,     cy,     r - 3, 0x5AEB)   # button face
+    _fill_circle(lcd, cx - r // 5, cy - r // 3, r // 4, 0x9CF3)  # gloss
+
+    arm   = r // 2           # half-length of symbol arms
+    thick = max(4, r // 5)   # bar thickness
+    # Horizontal bar (both + and -)
+    lcd.fill_rect(cx - arm, cy - thick // 2, 2 * arm + 1, thick, 0xFFFF)
+    if symbol == "+":
+        # Vertical bar
+        lcd.fill_rect(cx - thick // 2, cy - arm, thick, 2 * arm + 1, 0xFFFF)
+
+
 def _draw_button_v2(lcd, rect, label, active=False, act_color=0x0492):
     """Bevelled button with centred label."""
     x, y, w, h = rect
@@ -654,8 +690,9 @@ def _draw_static_frame(lcd):
     lcd.fill_rect(_PNL_T_X, 130, _tw, 1, C_BORDER)   # below label
     # [setpoint digits occupy y = 136 … 191]
     lcd.fill_rect(_PNL_T_X, 200, _tw, 1, C_BORDER)   # above +/- buttons
-    _draw_button_v2(lcd, UI_BUTTONS["setpoint_minus"], "  -  ")
-    _draw_button_v2(lcd, UI_BUTTONS["setpoint_plus"],  "  +  ")
+    # Round 3-D buttons – centres at (70, 237) and (211, 237), r = 32
+    _draw_3d_round_btn(lcd, 70,  237, 32, "-")
+    _draw_3d_round_btn(lcd, 211, 237, 32, "+")
 
     # ── Controls panel ────────────────────────────────────────────────────────
     lcd.text("PUMP 1",      357, 8,   C_LABEL)
