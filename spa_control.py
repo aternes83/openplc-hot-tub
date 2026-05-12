@@ -1140,7 +1140,7 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
 
     # ── Status bar LEDs (only redraws when any status changes) ───────────────
     _sb_led_y = _STATUS_BAR_Y + (_STATUS_BAR_H - 12) // 2
-    heat_led  = C_LED_AM if heater_on else (C_LED_GN if heat_req else C_LED_OFF)
+    heat_led  = C_LED_AM if heater_on else C_LED_OFF
     led_key   = (heat_led, pump_on, light_req, fault, fc)
     if led_key != ui_state.get("_c_led"):
         ui_state["_c_led"] = led_key
