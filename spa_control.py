@@ -1168,13 +1168,13 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
         ty = (_TOP_BAR_H - 10) // 2   # icon top (10-px tall icons)
         tt = (_TOP_BAR_H - 8)  // 2   # text top  (8-px tall font)
         # Clear the right-hand portion of the top bar
-        lcd.fill_rect(370, 0, 106, _TOP_BAR_H - 1, C_PANEL)
-        # BT icon (8×10 px) at x=376
-        _draw_bt_icon(lcd, 376, ty, C_LABEL)
-        # WiFi bars (11×10 px) at x=392
-        _draw_wifi_icon(lcd, 392, ty, C_LABEL)
-        # Time "HH:MM" at x=410
-        lcd.text(time_str, 410, tt, C_LABEL)
+        lcd.fill_rect(390, 0, 90, _TOP_BAR_H - 1, C_PANEL)
+        # BT icon (8×10 px)
+        _draw_bt_icon(lcd,  396, ty, C_LABEL)
+        # WiFi bars (11×10 px) – 6 px gap after BT
+        _draw_wifi_icon(lcd, 410, ty, C_LABEL)
+        # Time "HH:MM" – 12 px gap after WiFi, flush to right edge
+        lcd.text(time_str,   436, tt, C_LABEL)
 
     heat_req  = ui_state["xHeatRequest"]
     light_req = ui_state["xLightRequest"]
