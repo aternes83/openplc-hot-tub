@@ -1176,8 +1176,11 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
     p1_high_act = bool(outputs.get("xPump1_High", False))
     p1_off_act  = not (p1_low_act or p1_high_act)
 
+    p2_act = bool(outputs.get("xPump2", False))
+    p3_act = bool(outputs.get("xPump3", False))
+
     btn_key = (p1_off_act, p1_low_act, p1_high_act,
-               pump2_on, pump3_on, light_req,
+               p2_act, p3_act, light_req,
                eco_mode, max_jet_on, remain_m)
     if btn_key != ui_state.get("_c_btn"):
         ui_state["_c_btn"] = btn_key
@@ -1188,9 +1191,9 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
         _draw_button_v2(lcd, UI_BUTTONS["pump_high"], "HI",
                         active=p1_high_act, act_color=C_BTN_P_AC)
         _draw_button_v2(lcd, UI_BUTTONS["pump2"], "JET 2",
-                        active=pump2_on, act_color=C_BTN_P_AC)
+                        active=p2_act, act_color=C_BTN_P_AC)
         _draw_button_v2(lcd, UI_BUTTONS["pump3"], "JET 3",
-                        active=pump3_on, act_color=C_BTN_P_AC)
+                        active=p3_act, act_color=C_BTN_P_AC)
         _draw_button_v2(lcd, UI_BUTTONS["light"], "LIGHT",
                         active=light_req, act_color=C_BTN_L_AC)
         _draw_button_v2(lcd, UI_BUTTONS["eco"],     "ECO",
