@@ -462,8 +462,9 @@ TIMER_LIGHT_POS   = (0, 0)
 # ── Touch button rects (x, y, w, h) ──────────────────────────────────────────
 # Controls-panel y-values shifted up 28 px (title bar removed).
 UI_BUTTONS = {
-    # Top bar – brightness slider (sun icon at x≈4; slider track x=22…152)
-    "brightness_slider": (22, 0, 130, _TOP_BAR_H),
+    # Top bar – brightness slider (visual in top 22 px; touch zone extended to y=55
+    # to clear the physical bezel dead-zone at the top edge of the display panel)
+    "brightness_slider": (22, 0, 130, 55),
     # Temperature panel – rounded-rect setpoint buttons (y shifted by _TOP_BAR_H)
     "setpoint_minus": (10,  230, 120, 44),
     "setpoint_plus":  (152, 230, 120, 44),
@@ -1010,7 +1011,8 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
     # ── Brightness slider: immediate update on drag, no debounce delay ───────
     if _touch_button_at(x, y) == "brightness_slider":
         bx, _by, bw, _bh = UI_BUTTONS["brightness_slider"]
-        pct = max(5, min(100, int((x - bx) * 100 // bw)))
+        _vis_w = 130   # visual slider width (independent of extended touch height)
+        pct = max(5, min(100, int((x - bx) * 100 // _vis_w)))
         if pct != ui_state.get("bl_brightness", BL_FULL_DUTY):
             ui_state["bl_brightness"] = pct
             _set_backlight(pct)
