@@ -1299,8 +1299,8 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
 
         # ── Right: BT icon, WiFi bars, time ─────────────────────────────────
         lcd.fill_rect(390, 0, 90, _TOP_BAR_H - 1, C_PANEL)
-        _draw_bt_icon(lcd,  396, ty, C_LABEL)
-        _draw_wifi_icon(lcd, 410, ty, C_LABEL)
+        _draw_bt_icon(lcd,  396, ty, C_LABEL if bt_con else C_BORDER)
+        _draw_wifi_icon(lcd, 410, ty, C_LABEL if wifi_con else C_BORDER)
         lcd.text(time_str,   436, tt, C_LABEL)
 
     heat_req  = ui_state["xHeatRequest"]
@@ -1455,6 +1455,21 @@ def main(loop_ms=CONTROL_LOOP_MS):
 
     ctrl = SpaController()
     temp_avg = RollingAverage(TEMP_AVG_N)
+
+    # ── Network state (WiFi status + reconnect) ───────────────────────────────
+    _wifi_ssid, _wifi_pwd = "", ""
+    try:
+        import ujson as _j
+        with open("config.json") as _jf:
+            _wc = _j.loads(_jf.read())
+        _wifi_ssid = _wc.get("wifi_ssid", "")
+        _wifi_pwd  = _wc.get("wifi_password", "")
+    except Exception:
+        pass
+    import network as _net
+    _wlan = _net.WLAN(_net.STA_IF)
+    _wifi_check_ms = ticks_ms()   # run first check immediately
+
     lcd, touch = init_hmi()
     if lcd is not None:
         try:
@@ -1487,9 +1502,8 @@ def main(loop_ms=CONTROL_LOOP_MS):
         "_dynamic_key": None,
         "_timer_key": None,
         "bl_brightness":  BL_FULL_DUTY,   # 0-100 %; persists across dim/sleep cycles
-        # Top-bar connectivity state – TEST: forced on to verify icon layout
-        "bt_connected":   True,
-        "wifi_connected": True,
+        "bt_connected":   False,
+        "wifi_connected": _wlan.isconnected(),
     }
     raw_inputs = read_inputs()
     raw_inputs["rWaterTemp_F"] = temp_avg.update(raw_inputs.get("rWaterTemp_F", 0.0))
@@ -1520,6 +1534,21 @@ def main(loop_ms=CONTROL_LOOP_MS):
         if ui_state["eco_mode"] and ctrl.temp_setpoint_f != ECO_SETPOINT_F:
             ctrl.temp_setpoint_f = ECO_SETPOINT_F
             ui_state.pop("_c_sp", None)
+
+        # ── WiFi status check + reconnect (every 30 s) ───────────────────────
+        if ticks_diff(now, _wifi_check_ms) >= 30_000:
+            _wifi_check_ms = now
+            _connected = _wlan.isconnected()
+            if _connected != ui_state.get("wifi_connected"):
+                ui_state["wifi_connected"] = _connected
+                ui_state.pop("_c_top", None)   # force top-bar redraw
+            if not _connected and _wifi_ssid:
+                try:
+                    if not _wlan.active():
+                        _wlan.active(True)
+                    _wlan.connect(_wifi_ssid, _wifi_pwd)
+                except Exception:
+                    pass
 
         # ── Backlight dim / sleep ─────────────────────────────────────────────
         idle_ms    = ticks_diff(now, ui_state["_last_any_touch_ms"])
