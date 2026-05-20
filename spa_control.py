@@ -1444,6 +1444,125 @@ def write_outputs(values):
         pin.value(1 if values.get(name, False) else 0)
 
 
+# ── BLE / Nordic UART Service ────────────────────────────────────────────────
+# NUS lets any BLE terminal app (nRF Connect, Serial Bluetooth Terminal, etc.)
+# connect and exchange commands/status as plain text JSON.
+# Service UUID : 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+# TX char (notify, board→phone): 6E400003-…
+# RX char (write,  phone→board): 6E400002-…
+
+def _ble_advertise(ble, name_bytes):
+    adv = bytearray(b'\x02\x01\x06')            # Flags: general discoverable
+    adv += bytes([len(name_bytes) + 1, 0x09]) + name_bytes
+    try:
+        ble.gap_advertise(100_000, adv_data=adv)
+    except Exception:
+        pass
+
+
+def _ble_init(device_name="SpaControl"):
+    """Start BLE NUS peripheral.  Returns (ble, tx_handle, state) or None."""
+    try:
+        import bluetooth
+        _IRQ_CONNECT    = 1
+        _IRQ_DISCONNECT = 2
+        _IRQ_WRITE      = 3
+        _FLAG_NOTIFY    = 0x0010
+        _FLAG_WRITE     = 0x0008
+
+        ble = bluetooth.BLE()
+        ble.active(True)
+        try:
+            ble.config(mtu=256)
+        except Exception:
+            pass
+
+        _NUS = (
+            bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E"),
+            (
+                (bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"), _FLAG_NOTIFY),
+                (bluetooth.UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"), _FLAG_WRITE),
+            ),
+        )
+        ((tx_h, rx_h),) = ble.gatts_register_services((_NUS,))
+        try:
+            ble.gatts_set_buffer(tx_h, 256)
+            ble.gatts_set_buffer(rx_h, 256)
+        except Exception:
+            pass
+
+        _name_b = device_name.encode()
+        _st = {"conn": None, "rx_buf": []}
+
+        def _irq(event, data):
+            if event == _IRQ_CONNECT:
+                _st["conn"] = data[0]
+            elif event == _IRQ_DISCONNECT:
+                _st["conn"] = None
+                _ble_advertise(ble, _name_b)
+            elif event == _IRQ_WRITE:
+                _, val_h = data
+                if val_h == rx_h:
+                    _st["rx_buf"].append(bytes(ble.gatts_read(rx_h)))
+
+        ble.irq(_irq)
+        _ble_advertise(ble, _name_b)
+        print("BLE: advertising as '%s'" % device_name)
+        return ble, tx_h, _st
+    except Exception as _e:
+        print("BLE: init failed:", _e)
+        return None
+
+
+def _ble_send_status(ble, tx_h, conn_h, inputs, outputs, ctrl, ui_state):
+    try:
+        msg = ('{"t":%.1f,"sp":%.1f,"h":%d,"j1":%d,"j2":%d,"j3":%d,'
+               '"l":%d,"e":%d,"mj":%d,"f":%d}') % (
+            inputs.get("rWaterTemp_F", 0.0),
+            ctrl.temp_setpoint_f,
+            1 if outputs.get("xHeater") else 0,
+            ui_state.get("pump1_mode", 0),
+            1 if ui_state.get("pump2_on") else 0,
+            1 if ui_state.get("pump3_on") else 0,
+            1 if ui_state.get("xLightRequest") else 0,
+            1 if ui_state.get("eco_mode") else 0,
+            1 if ui_state.get("max_jet_on") else 0,
+            1 if outputs.get("xFault") else 0,
+        )
+        ble.gatts_write(tx_h, msg.encode())
+        ble.gatts_notify(conn_h, tx_h)
+    except Exception:
+        pass
+
+
+def _ble_apply_cmd(raw, ui_state, ctrl):
+    try:
+        import ujson
+        cmd = ujson.loads(raw)
+        if "set_temp" in cmd:
+            ctrl.temp_setpoint_f = max(60.0, min(106.0, float(cmd["set_temp"])))
+            ui_state.pop("_c_sp", None)
+        if "pump1" in cmd:
+            ui_state["pump1_mode"] = int(cmd["pump1"]) % 3
+        if "pump2" in cmd:
+            ui_state["pump2_on"] = bool(cmd["pump2"])
+        if "pump3" in cmd:
+            ui_state["pump3_on"] = bool(cmd["pump3"])
+        if "light" in cmd:
+            ui_state["xLightRequest"] = bool(cmd["light"])
+        if "eco" in cmd:
+            ui_state["eco_mode"] = bool(cmd["eco"])
+        if "max_jet" in cmd:
+            ui_state["max_jet_on"] = bool(cmd["max_jet"])
+            if cmd["max_jet"]:
+                from utime import ticks_ms as _tms
+                ui_state["max_jet_start_ms"] = _tms()
+        ui_state.pop("_c_btn", None)
+        ui_state.pop("_c_led", None)
+    except Exception:
+        pass
+
+
 def main(loop_ms=CONTROL_LOOP_MS):
     try:
         import gc
@@ -1469,6 +1588,13 @@ def main(loop_ms=CONTROL_LOOP_MS):
     import network as _net
     _wlan = _net.WLAN(_net.STA_IF)
     _wifi_check_ms = ticks_ms()   # run first check immediately
+
+    # ── BLE setup ─────────────────────────────────────────────────────────────
+    _ble_result  = _ble_init()
+    _ble         = _ble_result[0] if _ble_result else None
+    _ble_tx_h    = _ble_result[1] if _ble_result else None
+    _ble_state   = _ble_result[2] if _ble_result else {"conn": None, "rx_buf": []}
+    _ble_tx_ms   = ticks_ms()
 
     lcd, touch = init_hmi()
     if lcd is not None:
@@ -1549,6 +1675,19 @@ def main(loop_ms=CONTROL_LOOP_MS):
                     _wlan.connect(_wifi_ssid, _wifi_pwd)
                 except Exception:
                     pass
+
+        # ── BLE: icon state, receive commands, send periodic status ──────────
+        if _ble is not None:
+            bt_now = _ble_state["conn"] is not None
+            if bt_now != ui_state.get("bt_connected"):
+                ui_state["bt_connected"] = bt_now
+                ui_state.pop("_c_top", None)
+            while _ble_state["rx_buf"]:
+                _ble_apply_cmd(_ble_state["rx_buf"].pop(0), ui_state, ctrl)
+            if bt_now and ticks_diff(now, _ble_tx_ms) >= 2000:
+                _ble_tx_ms = now
+                _ble_send_status(_ble, _ble_tx_h, _ble_state["conn"],
+                                 inputs, outputs, ctrl, ui_state)
 
         # ── Backlight dim / sleep ─────────────────────────────────────────────
         idle_ms    = ticks_diff(now, ui_state["_last_any_touch_ms"])
