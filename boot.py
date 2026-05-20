@@ -96,17 +96,34 @@ try:
             try:
                 import ntptime as _ntp
                 _ntp.settime()   # sets utime epoch to UTC
+
                 _utc_off = int(_cfg.get("utc_offset_hours", 0))
-                if _utc_off:
-                    import machine as _mc
-                    _t = utime.time() + _utc_off * 3600
-                    _tm = utime.localtime(_t)
-                    # datetime tuple: (year, month, day, weekday, hour, min, sec, subsec)
-                    _mc.RTC().datetime((_tm[0], _tm[1], _tm[2], _tm[6],
-                                        _tm[3], _tm[4], _tm[5], 0))
-                print("boot: NTP synced, local time %02d:%02d" % (
-                    utime.localtime(utime.time() + _utc_off * 3600)[3],
-                    utime.localtime(utime.time() + _utc_off * 3600)[4]))
+
+                # Auto-apply US DST: +1 hour from 2nd Sun Mar 02:00
+                #                             to 1st Sun Nov 02:00
+                def _us_dst(y, mo, d, h):
+                    if mo < 3 or mo > 11: return 0
+                    if 3 < mo < 11:       return 1
+                    _t2 = [0,3,2,5,0,3,5,1,4,6,2,4]
+                    _yr = y - (mo < 3)
+                    _dow = (_yr+_yr//4-_yr//100+_yr//400+_t2[mo-1]+1) % 7  # 0=Sun
+                    if mo == 3:
+                        _sun2 = 1 + (7 - _dow) % 7 + 7
+                        return 1 if (d > _sun2 or (d == _sun2 and h >= 2)) else 0
+                    _sun1 = 1 + (7 - _dow) % 7
+                    return 0 if (d > _sun1 or (d == _sun1 and h >= 2)) else 1
+
+                _utc_tm = utime.localtime(utime.time())
+                _utc_off += _us_dst(_utc_tm[0], _utc_tm[1], _utc_tm[2], _utc_tm[3])
+
+                import machine as _mc
+                _t = utime.time() + _utc_off * 3600
+                _tm = utime.localtime(_t)
+                # datetime tuple: (year, month, day, weekday, hour, min, sec, subsec)
+                _mc.RTC().datetime((_tm[0], _tm[1], _tm[2], _tm[6],
+                                    _tm[3], _tm[4], _tm[5], 0))
+                print("boot: NTP synced, local time %02d:%02d (UTC%+d)" % (
+                    _tm[3], _tm[4], _utc_off))
             except Exception as _ntp_e:
                 print("boot: NTP failed (non-fatal):", _ntp_e)
         else:
