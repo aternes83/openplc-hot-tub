@@ -32,6 +32,17 @@ try:
     _pwd  = _cfg.get("wifi_password", "")
 
     if _ssid:
+        # BLE must be activated before WiFi so ESP-IDF configures BT+WiFi
+        # coexistence at startup.  Activating BLE after WiFi fails with EIO.
+        try:
+            import bluetooth as _bt
+            _ble_pre = _bt.BLE()
+            if not _ble_pre.active():
+                _ble_pre.active(True)
+            print("boot: BLE pre-activated, free:", gc.mem_free())
+        except Exception as _ble_pre_e:
+            print("boot: BLE pre-activate failed (non-fatal):", _ble_pre_e)
+
         import network
         gc.collect()
         print("boot: pre-WiFi free:", gc.mem_free())

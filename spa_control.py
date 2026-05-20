@@ -1234,6 +1234,8 @@ def _dynamic_snapshot(inputs, outputs, ctrl, ui_state):
         int(outputs.get("iFaultCode", 0)),
         bool(outputs.get("xFault")),
         int(ui_state.get("bl_brightness", BL_FULL_DUTY)),
+        bool(ui_state.get("bt_connected", False)),
+        bool(ui_state.get("wifi_connected", False)),
     )
 
 
@@ -1471,7 +1473,8 @@ def _ble_init(device_name="SpaControl"):
         _FLAG_WRITE     = 0x0008
 
         ble = bluetooth.BLE()
-        ble.active(True)
+        if not ble.active():
+            ble.active(True)   # no-op if boot.py already activated it
         try:
             ble.config(mtu=256)
         except Exception:
