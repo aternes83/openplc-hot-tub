@@ -1682,24 +1682,26 @@ def main(loop_ms=CONTROL_LOOP_MS):
             ctrl.temp_setpoint_f = ECO_SETPOINT_F
             ui_state.pop("_c_sp", None)
 
-        # ── Periodic GC (every 30 s) to prevent heap fragmentation ──────────
-        # BLE status JSON + ujson allocs every 2 s would fragment the heap
-        # without occasional compaction.
-        if ticks_diff(now, _wifi_check_ms) >= 30_000:
-            import gc as _gc; _gc.collect()
-
-        # ── WiFi status check + reconnect (every 30 s) ───────────────────────
+        # ── Periodic WiFi check + GC (every 30 s) ────────────────────────────
         if ticks_diff(now, _wifi_check_ms) >= 30_000:
             _wifi_check_ms = now
+            import gc as _gc; _gc.collect()   # compact heap after JSON allocs
             _connected = _wlan.isconnected()
             if _connected != ui_state.get("wifi_connected"):
                 ui_state["wifi_connected"] = _connected
-                ui_state.pop("_c_top", None)   # force top-bar redraw
+                ui_state.pop("_c_top", None)
             if not _connected and _wifi_ssid:
                 try:
-                    if not _wlan.active():
-                        _wlan.active(True)
-                    _wlan.connect(_wifi_ssid, _wifi_pwd)
+                    # Guard against PM_PERFORMANCE transient blips: only call
+                    # connect() when the driver is truly idle or in an error
+                    # state (status <= 0).  Calling connect() during CONNECTING
+                    # (status=1) or while the radio is mid-cycle resets the
+                    # WiFi state machine and kills the BLE connection via the
+                    # coexistence arbiter.
+                    if _wlan.status() <= 0:
+                        if not _wlan.active():
+                            _wlan.active(True)
+                        _wlan.connect(_wifi_ssid, _wifi_pwd)
                 except Exception:
                     pass
 
