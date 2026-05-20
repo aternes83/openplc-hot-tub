@@ -1495,14 +1495,27 @@ def _ble_init(device_name="SpaControl"):
             pass
 
         _name_b = device_name.encode()
-        _st = {"conn": None, "rx_buf": []}
+        # conn_ms: ticks_ms() when connection was established (0 = not connected).
+        # Used for a grace period before sending notifications so the phone can
+        # complete MTU exchange before we push 72-byte JSON at the default 20-byte
+        # payload limit — oversized early notifications cause connection drops.
+        # mtu: negotiated ATT_MTU - 3 (usable notification payload bytes).
+        _st = {"conn": None, "rx_buf": [], "conn_ms": 0, "mtu": 20}
+
+        _IRQ_MTU_EXCHANGED = 21
 
         def _irq(event, data):
             if event == _IRQ_CONNECT:
                 _st["conn"] = data[0]
+                from utime import ticks_ms as _t; _st["conn_ms"] = _t()
+                _st["mtu"] = 20   # reset to safe default until MTU exchange
             elif event == _IRQ_DISCONNECT:
                 _st["conn"] = None
+                _st["conn_ms"] = 0
                 _ble_advertise(ble, _name_b)
+            elif event == _IRQ_MTU_EXCHANGED:
+                _, mtu = data
+                _st["mtu"] = mtu - 3   # usable payload = ATT_MTU - 3
             elif event == _IRQ_WRITE:
                 _, val_h = data
                 if val_h == rx_h:
@@ -1517,7 +1530,10 @@ def _ble_init(device_name="SpaControl"):
         return None
 
 
-def _ble_send_status(ble, tx_h, conn_h, inputs, outputs, ctrl, ui_state):
+def _ble_send_status(ble, tx_h, conn_h, mtu, inputs, outputs, ctrl, ui_state):
+    # mtu is the usable notification payload size (ATT_MTU - 3).
+    # Skip if MTU exchange hasn't happened yet — sending oversized data before
+    # MTU is negotiated causes connection drops on some BLE stacks.
     try:
         msg = ('{"t":%.1f,"sp":%.1f,"h":%d,"j1":%d,"j2":%d,"j3":%d,'
                '"l":%d,"e":%d,"mj":%d,"f":%d}') % (
@@ -1532,6 +1548,8 @@ def _ble_send_status(ble, tx_h, conn_h, inputs, outputs, ctrl, ui_state):
             1 if ui_state.get("max_jet_on") else 0,
             1 if outputs.get("xFault") else 0,
         )
+        if mtu < len(msg):
+            return   # MTU exchange not done yet; skip rather than send truncated data
         ble.gatts_write(tx_h, msg.encode())
         ble.gatts_notify(conn_h, tx_h)
     except Exception:
@@ -1664,6 +1682,12 @@ def main(loop_ms=CONTROL_LOOP_MS):
             ctrl.temp_setpoint_f = ECO_SETPOINT_F
             ui_state.pop("_c_sp", None)
 
+        # ── Periodic GC (every 30 s) to prevent heap fragmentation ──────────
+        # BLE status JSON + ujson allocs every 2 s would fragment the heap
+        # without occasional compaction.
+        if ticks_diff(now, _wifi_check_ms) >= 30_000:
+            import gc as _gc; _gc.collect()
+
         # ── WiFi status check + reconnect (every 30 s) ───────────────────────
         if ticks_diff(now, _wifi_check_ms) >= 30_000:
             _wifi_check_ms = now
@@ -1687,9 +1711,14 @@ def main(loop_ms=CONTROL_LOOP_MS):
                 ui_state.pop("_c_top", None)
             while _ble_state["rx_buf"]:
                 _ble_apply_cmd(_ble_state["rx_buf"].pop(0), ui_state, ctrl)
-            if bt_now and ticks_diff(now, _ble_tx_ms) >= 2000:
+            _conn_h = _ble_state["conn"]   # snapshot to avoid IRQ race
+            _conn_age = ticks_diff(now, _ble_state["conn_ms"]) if _conn_h else 0
+            if (_conn_h is not None
+                    and _conn_age >= 3000          # grace period for MTU exchange
+                    and ticks_diff(now, _ble_tx_ms) >= 2000):
                 _ble_tx_ms = now
-                _ble_send_status(_ble, _ble_tx_h, _ble_state["conn"],
+                _ble_send_status(_ble, _ble_tx_h, _conn_h,
+                                 _ble_state["mtu"],
                                  inputs, outputs, ctrl, ui_state)
 
         # ── Backlight dim / sleep ─────────────────────────────────────────────

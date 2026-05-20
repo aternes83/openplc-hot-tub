@@ -34,11 +34,13 @@ try:
     if _ssid:
         # BLE must be activated before WiFi so ESP-IDF configures BT+WiFi
         # coexistence at startup.  Activating BLE after WiFi fails with EIO.
+        _ble_active = False
         try:
             import bluetooth as _bt
             _ble_pre = _bt.BLE()
             if not _ble_pre.active():
                 _ble_pre.active(True)
+            _ble_active = True
             print("boot: BLE pre-activated, free:", gc.mem_free())
         except Exception as _ble_pre_e:
             print("boot: BLE pre-activate failed (non-fatal):", _ble_pre_e)
@@ -80,7 +82,14 @@ try:
             print("boot: WiFi CONNECTED ip:", _wlan.ifconfig()[0],
                   "free:", gc.mem_free())
             try:
-                _wlan.config(pm=network.WLAN.PM_POWERSAVE)
+                # PM_NONE starves BLE of radio time (WiFi wins every arbitration).
+                # PM_POWERSAVE creates DTIM sleep windows BLE can use but can
+                # cause both to drop if the coexistence scheduler glitches.
+                # PM_PERFORMANCE (wake on every beacon, light PS) is the middle
+                # ground: WiFi stays responsive but yields radio gaps for BLE.
+                _pm = network.WLAN.PM_PERFORMANCE if _ble_active else network.WLAN.PM_POWERSAVE
+                _wlan.config(pm=_pm)
+                print("boot: WiFi pm=%s" % ("PERFORMANCE (BLE active)" if _ble_active else "POWERSAVE"))
             except Exception:
                 pass
             # NTP sync — set RTC to local time using utc_offset_hours from config
