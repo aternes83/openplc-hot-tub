@@ -432,7 +432,7 @@ C_LED_OFF  = 0x2104   # LED inactive dark
 C_BTN_NORM = 0x2965   # button idle
 C_BTN_P_AC = 0x0099   # pump active (dark cyan)
 C_BTN_H_AC = 0x6200   # heat active (dark amber)
-C_BTN_L_AC = 0x4420   # light active (dark yellow-green)
+C_BTN_L_AC = 0x9480   # light active (dark golden yellow)
 C_ACCENT   = 0x8410   # button-border accent – medium grey
 C_FAULT    = 0xF800   # fault red
 
