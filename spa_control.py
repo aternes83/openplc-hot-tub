@@ -1218,6 +1218,12 @@ def _timer_remain_seconds(inputs, ctrl, ui_state, now_ms):
 
 
 def _dynamic_snapshot(inputs, outputs, ctrl, ui_state):
+    try:
+        from machine import RTC as _RTC
+        _dt = _RTC().datetime()
+        _min_of_day = _dt[4] * 60 + _dt[5]
+    except Exception:
+        _min_of_day = 0
     return (
         round(inputs.get("rWaterTemp_F", 0.0), 1),
         round(ctrl.temp_setpoint_f, 1),
@@ -1236,6 +1242,7 @@ def _dynamic_snapshot(inputs, outputs, ctrl, ui_state):
         int(ui_state.get("bl_brightness", BL_FULL_DUTY)),
         bool(ui_state.get("bt_connected", False)),
         bool(ui_state.get("wifi_connected", False)),
+        _min_of_day,
     )
 
 
@@ -1457,7 +1464,7 @@ def _ble_advertise(ble, name_bytes):
     adv = bytearray(b'\x02\x01\x06')            # Flags: general discoverable
     adv += bytes([len(name_bytes) + 1, 0x09]) + name_bytes
     try:
-        ble.gap_advertise(100_000, adv_data=adv)
+        ble.gap_advertise(250_000, adv_data=adv)
     except Exception:
         pass
 
@@ -1616,6 +1623,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
     _ble_tx_h    = _ble_result[1] if _ble_result else None
     _ble_state   = _ble_result[2] if _ble_result else {"conn": None, "rx_buf": []}
     _ble_tx_ms   = ticks_ms()
+    _ble_adv_ms  = ticks_ms()  # last time we kicked re-advertise
 
     lcd, touch = init_hmi()
     if lcd is not None:
@@ -1692,13 +1700,12 @@ def main(loop_ms=CONTROL_LOOP_MS):
                 ui_state.pop("_c_top", None)
             if not _connected and _wifi_ssid:
                 try:
-                    # Guard against PM_PERFORMANCE transient blips: only call
-                    # connect() when the driver is truly idle or in an error
-                    # state (status <= 0).  Calling connect() during CONNECTING
-                    # (status=1) or while the radio is mid-cycle resets the
-                    # WiFi state machine and kills the BLE connection via the
-                    # coexistence arbiter.
-                    if _wlan.status() <= 0:
+                    # Only skip reconnect while actively associating (status=1).
+                    # Error states (201 wrong-pwd, 202 no-AP, 203 fail) are > 1
+                    # and must also trigger reconnect.  Calling connect() during
+                    # CONNECTING (status=1) resets the WiFi state machine and
+                    # kills the BLE coexistence arbiter.
+                    if _wlan.status() != 1:
                         if not _wlan.active():
                             _wlan.active(True)
                         _wlan.connect(_wifi_ssid, _wifi_pwd)
@@ -1722,6 +1729,15 @@ def main(loop_ms=CONTROL_LOOP_MS):
                 _ble_send_status(_ble, _ble_tx_h, _conn_h,
                                  _ble_state["mtu"],
                                  inputs, outputs, ctrl, ui_state)
+            # Watchdog: re-kick advertising every 3 min when not connected.
+            # Recovers from coexistence glitches that silently stop advertising.
+            if (_conn_h is None
+                    and ticks_diff(now, _ble_adv_ms) >= 180_000):
+                _ble_adv_ms = now
+                try:
+                    _ble_advertise(_ble, b"SpaControl")
+                except Exception:
+                    pass
 
         # ── Backlight dim / sleep ─────────────────────────────────────────────
         idle_ms    = ticks_diff(now, ui_state["_last_any_touch_ms"])
