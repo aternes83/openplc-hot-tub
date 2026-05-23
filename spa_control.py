@@ -1616,6 +1616,8 @@ def main(loop_ms=CONTROL_LOOP_MS):
     import network as _net
     _wlan = _net.WLAN(_net.STA_IF)
     _wifi_check_ms = ticks_ms()   # run first check immediately
+    _wifi_gc_ms    = ticks_ms()   # GC runs on its own 30 s cadence
+    _wifi_fail_n   = 0            # consecutive 10 s intervals without WiFi
 
     # ── BLE setup ─────────────────────────────────────────────────────────────
     _ble_result  = _ble_init()
@@ -1690,23 +1692,68 @@ def main(loop_ms=CONTROL_LOOP_MS):
             ctrl.temp_setpoint_f = ECO_SETPOINT_F
             ui_state.pop("_c_sp", None)
 
-        # ── Periodic WiFi check + GC (every 30 s) ────────────────────────────
-        if ticks_diff(now, _wifi_check_ms) >= 30_000:
+        # ── GC (every 30 s, independent of WiFi check) ───────────────────────
+        if ticks_diff(now, _wifi_gc_ms) >= 30_000:
+            _wifi_gc_ms = now
+            import gc as _gc; _gc.collect()
+
+        # ── WiFi check + reconnect (every 10 s) ───────────────────────────────
+        if ticks_diff(now, _wifi_check_ms) >= 10_000:
             _wifi_check_ms = now
-            import gc as _gc; _gc.collect()   # compact heap after JSON allocs
             _connected = _wlan.isconnected()
-            if _connected != ui_state.get("wifi_connected"):
+            _was_wifi = ui_state.get("wifi_connected", False)
+            if _connected != _was_wifi:
                 ui_state["wifi_connected"] = _connected
                 ui_state.pop("_c_top", None)
-            if not _connected and _wifi_ssid:
                 try:
-                    # Only skip reconnect while actively associating (status=1).
-                    # Error states (201 wrong-pwd, 202 no-AP, 203 fail) are > 1
-                    # and must also trigger reconnect.  Calling connect() during
-                    # CONNECTING (status=1) resets the WiFi state machine and
-                    # kills the BLE coexistence arbiter.
-                    if _wlan.status() != 1:
-                        if not _wlan.active():
+                    import utime as _ut
+                    _tm = _ut.localtime()
+                    _ts = "%02d:%02d:%02d" % (_tm[3], _tm[4], _tm[5])
+                    _st_log = _wlan.status()
+                    _ip_log = _wlan.ifconfig()[0] if _connected else "none"
+                    _line = "%s %s st=%s ip=%s uptime=%ds\n" % (
+                        _ts,
+                        "UP" if _connected else "DOWN",
+                        _st_log, _ip_log,
+                        ticks_diff(now, 0) // 1000,
+                    )
+                    # Keep last 20 lines only to avoid filling flash
+                    try:
+                        with open("wifi.log", "r") as _lf:
+                            _lines = _lf.readlines()
+                    except Exception:
+                        _lines = []
+                    _lines = (_lines + [_line])[-20:]
+                    with open("wifi.log", "w") as _lf:
+                        _lf.writelines(_lines)
+                except Exception:
+                    pass
+            if _connected:
+                _wifi_fail_n = 0
+            elif _wifi_ssid:
+                _wifi_fail_n += 1
+                try:
+                    _st = _wlan.status()
+                    # Never call connect() while associating (status=1) — it
+                    # resets the state machine and kills BLE coexistence.
+                    if _st != 1:
+                        if _st >= 200:
+                            try:
+                                _wlan.disconnect()
+                            except Exception:
+                                pass
+                        if _wifi_fail_n >= 3:
+                            # Hard reset after 30 s down — active(False/True)
+                            # reinits the driver and resets PM to default, so
+                            # restore PM_PERFORMANCE immediately after.
+                            _wifi_fail_n = 0
+                            _wlan.active(False)
+                            _wlan.active(True)
+                            try:
+                                _wlan.config(pm=_net.WLAN.PM_PERFORMANCE)
+                            except Exception:
+                                pass
+                        elif not _wlan.active():
                             _wlan.active(True)
                         _wlan.connect(_wifi_ssid, _wifi_pwd)
                 except Exception:
