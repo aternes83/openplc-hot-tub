@@ -1,16 +1,28 @@
 # boot.py — executed before main.py on every power-on / reset.
 #
-# WiFi MUST connect here, before main.py runs.
-# Reason 1 (heap): WiFi stack needs ~80 KB contiguous heap.  After main.py's
-#   module-level allocations (~27 KB) the heap is fragmented; at boot.py time
-#   it is clean.
-# Reason 2 (brownout): WiFi association TX spikes (~300 mA) and the ST7796S
-#   display SPI DMA together can drop the USB rail below the brownout threshold
-#   (~3.0 V) and reset the MCU.  Completing WiFi association here (before the
-#   display is ever initialised) separates the two peak-current events in time.
-# Reason 3 (LED inrush): after WiFi connects, we enable power-save mode so
-#   the radio sleeps between DTIM beacons.  This reduces idle WiFi current
-#   from ~80 mA to ~15 mA, giving headroom for the backlight soft-ramp later.
+# Order: BLE → WiFi → NTP → cleanup everything → MQTT TLS
+#
+# MQTT TLS is intentionally last so the heap is maximally clean before
+# the mbedTLS handshake.  Reason: the TLS handshake fragments the heap
+# (many alloc/free cycles during certificate validation).  If we run it
+# with other temporaries alive (BLE objects, NTP socket, ntptime module
+# refs, etc.) the heap ends up so fragmented that main.py cannot compile.
+# By deleting all temporaries *before* the handshake we give mbedTLS the
+# largest possible contiguous run.  After connect() the persistent TLS
+# context (~8-12 KB) is at one end of the heap; the rest is contiguous
+# and available for main.py compilation.
+#
+# WiFi MUST connect here (not in main.py) for two reasons:
+#   1. WiFi stack needs ~80 KB contiguous heap; main.py's allocs fragment
+#      it first.
+#   2. WiFi TX spike + display SPI DMA together can brownout the USB rail;
+#      separating them in time prevents MCU resets.
+#
+# MQTT TLS pre-connect is here (not in main.py) because the TLS handshake
+# needs ~20 KB contiguous heap; after main.py initialises the display and
+# BLE the heap is fragmented and every TLS attempt fails with ENOMEM.
+# The live MQTTClient is stored in _tls_buf.cl; mqtt_spa.setup() picks it
+# up, wires the real callback, and subscribes.
 
 import gc
 gc.collect()
@@ -28,8 +40,13 @@ try:
     except Exception:
         pass
 
-    _ssid = _cfg.get("wifi_ssid", "")
-    _pwd  = _cfg.get("wifi_password", "")
+    _ssid      = _cfg.get("wifi_ssid", "")
+    _pwd       = _cfg.get("wifi_password", "")
+    # Extract MQTT creds now so we can delete _cfg before the TLS handshake.
+    _mhost     = _cfg.get("mqtt_host", "")
+    _mport     = int(_cfg.get("mqtt_port", 1883))
+    _muser     = _cfg.get("mqtt_user", "") or None
+    _mpwd      = _cfg.get("mqtt_password", "") or None
 
     if _ssid:
         # BLE must be activated before WiFi so ESP-IDF configures BT+WiFi
@@ -81,18 +98,15 @@ try:
         if _wlan.isconnected():
             print("boot: WiFi CONNECTED ip:", _wlan.ifconfig()[0],
                   "free:", gc.mem_free())
+            _pm = network.WLAN.PM_PERFORMANCE if _ble_active else network.WLAN.PM_POWERSAVE
             try:
-                # PM_NONE starves BLE of radio time (WiFi wins every arbitration).
-                # PM_POWERSAVE creates DTIM sleep windows BLE can use but can
-                # cause both to drop if the coexistence scheduler glitches.
-                # PM_PERFORMANCE (wake on every beacon, light PS) is the middle
-                # ground: WiFi stays responsive but yields radio gaps for BLE.
-                _pm = network.WLAN.PM_PERFORMANCE if _ble_active else network.WLAN.PM_POWERSAVE
                 _wlan.config(pm=_pm)
                 print("boot: WiFi pm=%s" % ("PERFORMANCE (BLE active)" if _ble_active else "POWERSAVE"))
             except Exception:
                 pass
-            # NTP sync — set RTC to local time using utc_offset_hours from config
+
+            # NTP sync — do this BEFORE MQTT so its temporary socket/buffers
+            # are freed before the TLS handshake fragments the heap.
             try:
                 import ntptime as _ntp
                 _ntp.settime()   # sets utime epoch to UTC
@@ -126,13 +140,84 @@ try:
                     _tm[3], _tm[4], _utc_off))
             except Exception as _ntp_e:
                 print("boot: NTP failed (non-fatal):", _ntp_e)
+
+            # ── Maximise contiguous free heap before TLS handshake ────────
+            # Delete every Python-layer temporary.  The GC can then reclaim
+            # all unreferenced objects, leaving the heap as clean as possible
+            # for mbedTLS's alloc/free storm during the TLS handshake.
+            try: del _ble_pre, _bt, _ble_active
+            except Exception: pass
+            try: del _ntp, _mc, _utc_off, _utc_tm, _t, _tm, _us_dst
+            except Exception: pass
+            try: del _pm, _deadline
+            except Exception: pass
+            del _wlan, network
+            del _ssid, _pwd, _cfg, json, utime
+            gc.collect()
+            gc.collect()
+            gc.collect()
+            print("boot: pre-MQTT free:", gc.mem_free())
+
+            # MQTT TLS pre-connect — heap is maximally clean here.
+            # We only call connect() here.  set_callback + subscribe happen
+            # in mqtt_spa.setup() after main.py wires the real _on_msg cb.
+            _mcl = None
+            try:
+                if _mhost:
+                    from umqtt.simple import MQTTClient as _MQC
+                    import ubinascii as _ubi, machine as _mc2
+                    _cid = b"spa-" + _ubi.hexlify(_mc2.unique_id())
+                    _use_ssl = (_mport == 8883)
+                    _ssl_p = {"server_hostname": _mhost} if _use_ssl else {}
+                    if _use_ssl:
+                        import network as _net2
+                        _wlan2 = _net2.WLAN(_net2.STA_IF)
+                        _wlan2.config(pm=_net2.WLAN.PM_NONE)
+                        import utime as _ut2
+                        _ut2.sleep_ms(500)
+                        del _ut2
+                    _mcl = _MQC(
+                        _cid, _mhost, port=_mport,
+                        user=_muser, password=_mpwd,
+                        ssl=_use_ssl, ssl_params=_ssl_p, keepalive=120,
+                    )
+                    _mcl.connect()
+                    if _use_ssl:
+                        _wlan2.config(pm=_net2.WLAN.PM_PERFORMANCE)
+                        del _wlan2, _net2
+                    import _tls_buf
+                    _tls_buf.cl = _mcl
+                    _mcl = None   # ownership transferred to _tls_buf.cl
+                    del _MQC, _ubi, _mc2, _cid, _use_ssl, _ssl_p
+                    gc.collect()
+                    print("boot: MQTT connected free:", gc.mem_free())
+            except Exception as _me:
+                print("boot: MQTT skipped:", _me)
+                if _mcl is not None:
+                    try: _mcl.disconnect()
+                    except Exception: pass
+                    _mcl = None
+                # Restore PM if SSL path set PM_NONE and then failed
+                try:
+                    import network as _net3
+                    _net3.WLAN(_net3.STA_IF).config(pm=_net3.WLAN.PM_PERFORMANCE)
+                    del _net3
+                except Exception:
+                    pass
+                gc.collect()
+
+            del _mhost, _mport, _muser, _mpwd
+
         else:
             print("boot: WiFi not connected after 15s (status:",
                   _wlan.status(), ") — main.py will retry")
+            del _wlan, network
+            del _ssid, _pwd, _cfg, json, utime
+            del _mhost, _mport, _muser, _mpwd
 
-        del _wlan, network
-
-    del _ssid, _pwd, _cfg, json, utime
+    else:
+        del _ssid, _pwd, _cfg, json, utime
+        del _mhost, _mport, _muser, _mpwd
 
 except Exception as _boot_e:
     # Never crash in boot.py — a boot exception prevents main.py from running.

@@ -1605,12 +1605,17 @@ def main(loop_ms=CONTROL_LOOP_MS):
 
     # ── Network state (WiFi status + reconnect) ───────────────────────────────
     _wifi_ssid, _wifi_pwd = "", ""
+    _mqtt_host, _mqtt_port, _mqtt_user, _mqtt_pw = "", 1883, "", ""
     try:
         import ujson as _j
         with open("config.json") as _jf:
             _wc = _j.loads(_jf.read())
         _wifi_ssid = _wc.get("wifi_ssid", "")
         _wifi_pwd  = _wc.get("wifi_password", "")
+        _mqtt_host = _wc.get("mqtt_host", "")
+        _mqtt_port = int(_wc.get("mqtt_port", 1883))
+        _mqtt_user = _wc.get("mqtt_user", "")
+        _mqtt_pw   = _wc.get("mqtt_password", "")
     except Exception:
         pass
     import network as _net
@@ -1670,6 +1675,14 @@ def main(loop_ms=CONTROL_LOOP_MS):
     ui_state["_dynamic_key"] = _dynamic_snapshot(inputs, outputs, ctrl, ui_state)
 
     _last_touch_display = None
+    _mqtt = None
+    if _mqtt_host:
+        try:
+            import mqtt_spa as _mqtt
+            _mqtt.setup(_mqtt_host, _mqtt_port, _mqtt_user, _mqtt_pw,
+                        lambda p: _ble_apply_cmd(p, ui_state, ctrl))
+        except Exception:
+            _mqtt = None
 
     while True:
         raw_inputs = read_inputs()
@@ -1758,6 +1771,9 @@ def main(loop_ms=CONTROL_LOOP_MS):
                         _wlan.connect(_wifi_ssid, _wifi_pwd)
                 except Exception:
                     pass
+
+        if _mqtt is not None:
+            _mqtt.tick(inputs, outputs, ctrl, ui_state, _wlan.isconnected())
 
         # ── BLE: icon state, receive commands, send periodic status ──────────
         if _ble is not None:
