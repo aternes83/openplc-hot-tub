@@ -480,6 +480,17 @@ UI_LIMITS = {
 ECO_SETPOINT_F      = 80.0           # temp target while ECO mode is active
 MAX_JET_DURATION_MS = 20 * 60 * 1000 # 20-minute MAX JET auto-off
 
+# ── Weekly planned reboot ─────────────────────────────────────────────────────
+# Soft-reset the controller once a week to clear heap fragmentation and refresh
+# WiFi/BLE/MQTT/NTP state (see boot.py notes on heap cleanliness). Fires at local
+# wall-clock time — boot.py already applies the US DST offset to the RTC, so this
+# is 04:00 EST in winter / EDT in summer with no extra handling needed.
+RESET_ENABLED       = True
+RESET_WEEKDAY       = 6              # 0=Mon … 6=Sun (machine.RTC weekday convention)
+RESET_HOUR          = 4             # 04:00 local
+RESET_CHECK_MS      = 30_000        # how often to test the clock (twice a minute)
+RESET_MIN_UPTIME_MS = 600_000       # anti-loop: a fresh boot can't re-reset for 10 min
+
 # Timer stubs (run-timers section removed from UI; kept so dead code doesn't NameError)
 TIMER_LABEL_WIDTH = 0
 TIMER_SPA_POS     = (0, 0)
@@ -1623,6 +1634,8 @@ def main(loop_ms=CONTROL_LOOP_MS):
     _wifi_check_ms = ticks_ms()   # run first check immediately
     _wifi_gc_ms    = ticks_ms()   # GC runs on its own 30 s cadence
     _wifi_fail_n   = 0            # consecutive 10 s intervals without WiFi
+    _reset_check_ms = ticks_ms()  # weekly-reboot clock check cadence
+    _boot_ticks     = ticks_ms()  # uptime reference for the anti-loop guard
 
     # ── BLE setup ─────────────────────────────────────────────────────────────
     _ble_result  = _ble_init()
@@ -1709,6 +1722,22 @@ def main(loop_ms=CONTROL_LOOP_MS):
         if ticks_diff(now, _wifi_gc_ms) >= 30_000:
             _wifi_gc_ms = now
             import gc as _gc; _gc.collect()
+
+        # ── Weekly planned reboot (Sunday 04:00 local) ───────────────────────
+        if RESET_ENABLED and ticks_diff(now, _reset_check_ms) >= RESET_CHECK_MS:
+            _reset_check_ms = now
+            try:
+                from machine import RTC as _RTC
+                _y, _mo, _d, _wd, _hh, _mm, _ss, _sub = _RTC().datetime()
+                if (_y >= 2024                              # RTC actually NTP-synced
+                        and _wd == RESET_WEEKDAY
+                        and _hh == RESET_HOUR
+                        and ticks_diff(now, _boot_ticks) >= RESET_MIN_UPTIME_MS):
+                    write_outputs({})                       # de-energize all loads first
+                    import machine as _machine
+                    _machine.reset()
+            except Exception:
+                pass
 
         # ── WiFi check + reconnect (every 10 s) ───────────────────────────────
         if ticks_diff(now, _wifi_check_ms) >= 10_000:
