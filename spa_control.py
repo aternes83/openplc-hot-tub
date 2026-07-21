@@ -471,7 +471,7 @@ _TEMP_DEG_X = _BIG_TEMP_X + 2*_TEMP_PITCH + 5*_TEMP_SCALE + 4   # 232
 _SP_DEG_X   = _BIG_SP_X   + 2*_SP_PITCH   + 5*_SP_SCALE   + 3   # 208
 
 UI_LIMITS = {
-    "SETPOINT_MIN_F": 80.0,
+    "SETPOINT_MIN_F": 60.0,
     "SETPOINT_MAX_F": 104.0,
     "SETPOINT_STEP_F": 1.0,
 }
