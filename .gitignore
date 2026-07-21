@@ -9,3 +9,18 @@ __pycache__/
 # Editor / IDE
 .vscode/
 *.swp
+
+# MicroPython firmware binaries
+*.bin
+*.mpy
+
+# Credentials — never commit
+config.json
+
+# Scratch / diagnostic / recovery scripts
+boot_diag.py
+diag_main.py
+recover.py
+
+# Claude Code internal
+.claude/

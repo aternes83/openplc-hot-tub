@@ -206,7 +206,21 @@ class ST7796:
         self._cmd(_DISPON)
         utime.sleep_ms(120)
 
+        # Enable brightness-control block so WRDISBV (0x51) commands take effect.
+        # WRCTRLD 0x53: BCTRL=1 | DD=1 | BL=1 = 0x2C
+        # WRCABC  0x55: 0x00 = CABC off (manual brightness via WRDISBV)
+        # WRDISBV 0x51: 0xFF = full brightness at startup
+        self._cmd(0x53, b"\x2C")
+        self._cmd(0x55, b"\x00")
+        self._cmd(0x51, b"\xFF")
+
         self.fill(0)
+
+    def set_brightness(self, level):
+        """Set display brightness via WRDISBV register.
+        level: 0 (off) … 255 (max).  Requires WRCTRLD BCTRL bit enabled at init.
+        """
+        self._cmd(0x51, bytearray([max(0, min(255, int(level)))]))
 
     def pixel(self, x, y, color):
         self.fill_rect(x, y, 1, 1, color)
@@ -225,12 +239,25 @@ class ST7796:
         else:
             self._fb_line(x1, y1, x2, y2, color)
 
+    @staticmethod
+    def _swap_bytes(color):
+        """Swap high and low bytes of a 16-bit colour.
+
+        framebuf.RGB565 stores each pixel as a native uint16_t, which on the
+        little-endian ESP32 means the low byte is written to memory first.
+        _draw_buffer then streams those bytes directly over SPI.  The ST7796
+        expects big-endian (high byte first), so every colour passed into a
+        FrameBuffer must be byte-swapped so the bytes land in the right order
+        on the wire.
+        """
+        return ((color & 0xFF) << 8) | (color >> 8)
+
     def _fb_line(self, x1, y1, x2, y2, color):
         w = abs(x2 - x1) + 1
         h = abs(y2 - y1) + 1
         buf = bytearray(w * h * 2)
         fb = framebuf.FrameBuffer(buf, w, h, framebuf.RGB565)
-        fb.line(x1 - min(x1, x2), y1 - min(y1, y2), x2 - min(x1, x2), y2 - min(y1, y2), color)
+        fb.line(x1 - min(x1, x2), y1 - min(y1, y2), x2 - min(x1, x2), y2 - min(y1, y2), self._swap_bytes(color))
         self._draw_buffer(min(x1, x2), min(y1, y2), w, h, buf)
 
     def rect(self, x, y, w, h, color):
@@ -256,7 +283,7 @@ class ST7796:
         buf = bytearray(w * h * 2)
         fb = framebuf.FrameBuffer(buf, w, h, framebuf.RGB565)
         fb.fill(0)
-        fb.text(s, 0, 0, color)
+        fb.text(s, 0, 0, self._swap_bytes(color))
         self._draw_buffer(x, y, w, h, buf)
 
     def show(self):
