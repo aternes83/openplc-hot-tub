@@ -1602,6 +1602,103 @@ def _ble_apply_cmd(raw, ui_state, ctrl):
         pass
 
 
+# ── BLE WiFi provisioning ─────────────────────────────────────────────────────
+# The mobile app pairs over BLE (NUS) and provisions WiFi without needing the
+# board online first. Protocol (JSON over the same RX/TX chars):
+#   app -> board : {"wifi_scan":1}
+#   board -> app : {"scan":"begin"} {"net":{"s":SSID,"r":RSSI,"sec":0|1}} ... {"scan":"end"}
+#   app -> board : {"wifi_ssid":"X","wifi_pw":"Y"}
+#   board -> app : {"wifi":"connecting"} then {"wifi":"ok","ip":"..."} | {"wifi":"fail","err":"..."}
+
+def _ble_notify(ble, tx_h, conn_h, mtu, msg):
+    """Send one small JSON message over the NUS TX characteristic (best-effort)."""
+    try:
+        if conn_h is None:
+            return
+        b = msg.encode() if isinstance(msg, str) else msg
+        if mtu < len(b):
+            return   # would truncate; skip (provisioning msgs are small, MTU ~180)
+        ble.gatts_write(tx_h, b)
+        ble.gatts_notify(conn_h, tx_h)
+    except Exception:
+        pass
+
+
+def _wifi_scan_reply(ble, tx_h, conn_h, mtu):
+    """Scan for networks and stream the (deduped, strongest-first) list to the app."""
+    try:
+        import network
+        wlan = network.WLAN(network.STA_IF)
+        if not wlan.active():
+            wlan.active(True)
+        nets = wlan.scan()   # (ssid, bssid, channel, RSSI, authmode, hidden)
+    except Exception:
+        nets = []
+    best = {}
+    for n in nets:
+        try:
+            raw_ssid = n[0]
+            ssid = raw_ssid.decode() if isinstance(raw_ssid, (bytes, bytearray)) else str(raw_ssid)
+        except Exception:
+            ssid = ""
+        if not ssid:
+            continue
+        rssi = n[3]
+        sec = 0 if n[4] == 0 else 1
+        if ssid not in best or rssi > best[ssid][0]:
+            best[ssid] = (rssi, sec)
+    items = sorted(best.items(), key=lambda kv: kv[1][0], reverse=True)[:15]
+
+    import ujson
+    _ble_notify(ble, tx_h, conn_h, mtu, '{"scan":"begin"}')
+    for ssid, (rssi, sec) in items:
+        _ble_notify(ble, tx_h, conn_h, mtu,
+                    ujson.dumps({"net": {"s": ssid, "r": rssi, "sec": sec}}))
+    _ble_notify(ble, tx_h, conn_h, mtu, '{"scan":"end"}')
+
+
+def _save_wifi_config(ssid, pw):
+    """Persist WiFi creds into config.json (preserving other keys). Returns bool."""
+    import ujson
+    cfg = {}
+    try:
+        with open("config.json") as f:
+            loaded = ujson.loads(f.read())
+        if isinstance(loaded, dict):
+            cfg = loaded
+    except Exception:
+        cfg = {}
+    cfg["wifi_ssid"] = ssid
+    cfg["wifi_password"] = pw
+    try:
+        with open("config.json", "w") as f:
+            f.write(ujson.dumps(cfg))
+        return True
+    except Exception:
+        return False
+
+
+def _handle_ble_rx(raw, ui_state, ctrl, ble, tx_h, conn_h, mtu):
+    """Route a BLE RX payload. Returns ('provision', ssid, pw) when WiFi creds are
+    received (caller applies them, needs main-loop locals); handles scan inline;
+    otherwise falls through to the normal spa-command handler."""
+    try:
+        import ujson
+        cmd = ujson.loads(raw)
+    except Exception:
+        _ble_apply_cmd(raw, ui_state, ctrl)
+        return None
+    if not isinstance(cmd, dict):
+        return None
+    if cmd.get("wifi_scan"):
+        _wifi_scan_reply(ble, tx_h, conn_h, mtu)
+        return None
+    if "wifi_ssid" in cmd:
+        return ("provision", str(cmd.get("wifi_ssid", "")), str(cmd.get("wifi_pw", "")))
+    _ble_apply_cmd(raw, ui_state, ctrl)
+    return None
+
+
 def main(loop_ms=CONTROL_LOOP_MS):
     try:
         import gc
@@ -1644,6 +1741,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
     _ble_state   = _ble_result[2] if _ble_result else {"conn": None, "rx_buf": []}
     _ble_tx_ms   = ticks_ms()
     _ble_adv_ms  = ticks_ms()  # last time we kicked re-advertise
+    _prov = {"active": False, "start_ms": 0}   # BLE WiFi-provisioning state
 
     lcd, touch = init_hmi()
     if lcd is not None:
@@ -1811,7 +1909,43 @@ def main(loop_ms=CONTROL_LOOP_MS):
                 ui_state["bt_connected"] = bt_now
                 ui_state.pop("_c_top", None)
             while _ble_state["rx_buf"]:
-                _ble_apply_cmd(_ble_state["rx_buf"].pop(0), ui_state, ctrl)
+                _action = _handle_ble_rx(
+                    _ble_state["rx_buf"].pop(0), ui_state, ctrl,
+                    _ble, _ble_tx_h, _ble_state["conn"], _ble_state["mtu"])
+                if _action and _action[0] == "provision":
+                    _p_ssid, _p_pw = _action[1], _action[2]
+                    if _save_wifi_config(_p_ssid, _p_pw):
+                        _wifi_ssid, _wifi_pwd = _p_ssid, _p_pw
+                        try:
+                            if not _wlan.active():
+                                _wlan.active(True)
+                            try:
+                                _wlan.disconnect()
+                            except Exception:
+                                pass
+                            _wlan.connect(_wifi_ssid, _wifi_pwd)
+                        except Exception:
+                            pass
+                        _wifi_fail_n = 0
+                        _prov["active"] = True
+                        _prov["start_ms"] = now
+                        _ble_notify(_ble, _ble_tx_h, _ble_state["conn"],
+                                    _ble_state["mtu"], '{"wifi":"connecting"}')
+                    else:
+                        _ble_notify(_ble, _ble_tx_h, _ble_state["conn"],
+                                    _ble_state["mtu"], '{"wifi":"fail","err":"save"}')
+
+            # ── WiFi provisioning result (non-blocking poll) ──────────────────
+            if _prov["active"]:
+                if _wlan.isconnected():
+                    _ble_notify(_ble, _ble_tx_h, _ble_state["conn"], _ble_state["mtu"],
+                                '{"wifi":"ok","ip":"%s"}' % _wlan.ifconfig()[0])
+                    _prov["active"] = False
+                elif ticks_diff(now, _prov["start_ms"]) >= 25_000:
+                    _ble_notify(_ble, _ble_tx_h, _ble_state["conn"], _ble_state["mtu"],
+                                '{"wifi":"fail","err":"timeout"}')
+                    _prov["active"] = False
+
             _conn_h = _ble_state["conn"]   # snapshot to avoid IRQ race
             _conn_age = ticks_diff(now, _ble_state["conn_ms"]) if _conn_h else 0
             if (_conn_h is not None
