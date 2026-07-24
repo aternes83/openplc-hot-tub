@@ -1657,6 +1657,26 @@ def _wifi_scan_reply(ble, tx_h, conn_h, mtu):
     _ble_notify(ble, tx_h, conn_h, mtu, '{"scan":"end"}')
 
 
+def _broker_reply(ble, tx_h, conn_h, mtu):
+    """Send the board's MQTT broker settings so the app can auto-configure."""
+    import ujson
+    cfg = {}
+    try:
+        with open("config.json") as f:
+            loaded = ujson.loads(f.read())
+        if isinstance(loaded, dict):
+            cfg = loaded
+    except Exception:
+        cfg = {}
+    payload = {"broker": {
+        "host": cfg.get("mqtt_host", ""),
+        "port": int(cfg.get("mqtt_port", 8883)),
+        "user": cfg.get("mqtt_user", ""),
+        "pw":   cfg.get("mqtt_password", ""),
+    }}
+    _ble_notify(ble, tx_h, conn_h, mtu, ujson.dumps(payload))
+
+
 def _save_wifi_config(ssid, pw):
     """Persist WiFi creds into config.json (preserving other keys). Returns bool."""
     import ujson
@@ -1692,6 +1712,9 @@ def _handle_ble_rx(raw, ui_state, ctrl, ble, tx_h, conn_h, mtu):
         return None
     if cmd.get("wifi_scan"):
         _wifi_scan_reply(ble, tx_h, conn_h, mtu)
+        return None
+    if cmd.get("broker_get"):
+        _broker_reply(ble, tx_h, conn_h, mtu)
         return None
     if "wifi_ssid" in cmd:
         return ("provision", str(cmd.get("wifi_ssid", "")), str(cmd.get("wifi_pw", "")))
