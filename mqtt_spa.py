@@ -235,11 +235,13 @@ def _status_signature(outputs, ctrl, ui_state):
     return (
         round(ctrl.temp_setpoint_f, 1),
         bool(outputs.get("xHeater")),
-        int(ui_state.get("pump1_mode", 0)),
-        bool(ui_state.get("pump2_on", False)),
-        bool(ui_state.get("pump3_on", False)),
+        bool(outputs.get("xPump1_Low")),
+        bool(outputs.get("xPump1_High")),
+        bool(outputs.get("xPump2")),
+        bool(outputs.get("xPump3")),
         bool(ui_state.get("xLightRequest", False)),
         bool(ui_state.get("eco_mode", False)),
+        bool(ui_state.get("max_jet_on", False)),
         bool(outputs.get("xFault")),
         int(outputs.get("iFaultCode", 0)),
     )
@@ -253,11 +255,16 @@ def _do_publish(inputs, outputs, ctrl, ui_state):
             "temp_f":     round(inputs.get("rWaterTemp_F", 0.0), 1),
             "setpoint":   round(ctrl.temp_setpoint_f, 1),
             "heater":     bool(outputs.get("xHeater")),
-            "pump1":      int(ui_state.get("pump1_mode", 0)),
-            "pump2":      bool(ui_state.get("pump2_on", False)),
-            "pump3":      bool(ui_state.get("pump3_on", False)),
+            # Publish ACTUAL pump outputs (not the user's setting) so the app
+            # stays honest like the LCD — e.g. MAX JET forcing all jets high, or
+            # the heater forcing Jet 1 low.
+            "pump1":      (2 if outputs.get("xPump1_High") else
+                           (1 if outputs.get("xPump1_Low") else 0)),
+            "pump2":      bool(outputs.get("xPump2")),
+            "pump3":      bool(outputs.get("xPump3")),
             "light":      bool(ui_state.get("xLightRequest", False)),
             "eco":        bool(ui_state.get("eco_mode", False)),
+            "max_jet":    bool(ui_state.get("max_jet_on", False)),
             "fault":      bool(outputs.get("xFault")),
             "fault_code": int(outputs.get("iFaultCode", 0)),
         })
