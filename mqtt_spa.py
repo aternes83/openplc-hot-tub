@@ -27,11 +27,13 @@ _ready   = False     # True after setup() called with a non-empty host
 _connect_ms = None   # last connect attempt ticks
 _check_ms   = 0
 _pub_ms     = 0
+_last_sig   = None   # last published control-state signature (publish-on-change)
 
 _CONNECT_INTERVAL_MS =  60_000   # retry after failed connect
 _FIRST_CONNECT_DELAY =  30_000   # initial connect delay after WiFi up
 _CHECK_INTERVAL_MS   =   1_000
-_PUB_INTERVAL_MS     =  30_000
+_PUB_INTERVAL_MS     =  30_000   # heartbeat republish interval
+_CHANGE_MIN_MS       =     250   # min gap between change-triggered publishes
 
 _tls_reserve = None   # unused now; boot.py pre-connects instead
 
@@ -100,7 +102,7 @@ def tick(inputs, outputs, ctrl, ui_state, wifi_connected):
     wifi_connected: bool — pass _wlan.isconnected() from spa_control.py.
     Never raises.
     """
-    global _cl, _connect_ms, _check_ms, _pub_ms
+    global _cl, _connect_ms, _check_ms, _pub_ms, _last_sig
 
     if not _ready or not wifi_connected:
         return
@@ -137,10 +139,15 @@ def tick(inputs, outputs, ctrl, ui_state, wifi_connected):
             _connect_ms = now
             return
 
-    # ── periodic publish ──────────────────────────────────────────────────────
-    if _cl is not None and _t.ticks_diff(now, _pub_ms) >= _PUB_INTERVAL_MS:
-        _pub_ms = now
-        _do_publish(inputs, outputs, ctrl, ui_state)
+    # ── publish: immediately on control-state change, else 30 s heartbeat ──────
+    if _cl is not None:
+        sig = _status_signature(outputs, ctrl, ui_state)
+        due_change = (sig != _last_sig) and _t.ticks_diff(now, _pub_ms) >= _CHANGE_MIN_MS
+        due_beat   = _t.ticks_diff(now, _pub_ms) >= _PUB_INTERVAL_MS
+        if due_change or due_beat:
+            _last_sig = sig
+            _pub_ms = now
+            _do_publish(inputs, outputs, ctrl, ui_state)
 
     # ── dispatch inbound commands ─────────────────────────────────────────────
     while _rx_buf:
@@ -219,6 +226,23 @@ def _do_connect(_t):
                 _wlan.config(pm=_pm_saved)
             except Exception as e:
                 _log("PM restore warn: %s" % e)
+
+
+def _status_signature(outputs, ctrl, ui_state):
+    """Control-state fields that trigger an immediate publish when they change.
+    Water temp is intentionally excluded so its continuous drift doesn't spam
+    publishes — the 30 s heartbeat carries fresh temperature."""
+    return (
+        round(ctrl.temp_setpoint_f, 1),
+        bool(outputs.get("xHeater")),
+        int(ui_state.get("pump1_mode", 0)),
+        bool(ui_state.get("pump2_on", False)),
+        bool(ui_state.get("pump3_on", False)),
+        bool(ui_state.get("xLightRequest", False)),
+        bool(ui_state.get("eco_mode", False)),
+        bool(outputs.get("xFault")),
+        int(outputs.get("iFaultCode", 0)),
+    )
 
 
 def _do_publish(inputs, outputs, ctrl, ui_state):
