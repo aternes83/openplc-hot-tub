@@ -491,6 +491,16 @@ RESET_HOUR          = 4             # 04:00 local
 RESET_CHECK_MS      = 30_000        # how often to test the clock (twice a minute)
 RESET_MIN_UPTIME_MS = 600_000       # anti-loop: a fresh boot can't re-reset for 10 min
 
+# ── Smart schedule ────────────────────────────────────────────────────────────
+# The app pushes a schedule (persisted to schedule.json) so the controller heats
+# only during chosen windows — the Time-of-Day use case. Evaluated on the RTC
+# clock; the setpoint is applied only at window transitions, so manual nudges
+# (LCD or app) still hold until the next boundary.
+SCHEDULE_FILE   = "schedule.json"
+SCHED_CHECK_MS  = 20_000            # how often to evaluate the schedule
+SCHED_MIN_F     = 60.0
+SCHED_MAX_F     = 104.0
+
 # Timer stubs (run-timers section removed from UI; kept so dead code doesn't NameError)
 TIMER_LABEL_WIDTH = 0
 TIMER_SPA_POS     = (0, 0)
@@ -1596,10 +1606,100 @@ def _ble_apply_cmd(raw, ui_state, ctrl):
             if cmd["max_jet"]:
                 from utime import ticks_ms as _tms
                 ui_state["max_jet_start_ms"] = _tms()
+        if "schedule" in cmd:
+            _apply_schedule_cmd(cmd["schedule"], ui_state)
         ui_state.pop("_c_btn", None)
         ui_state.pop("_c_led", None)
     except Exception:
         pass
+
+
+# ── Smart schedule ────────────────────────────────────────────────────────────
+
+def _clamp_sched_f(v):
+    try:
+        return max(SCHED_MIN_F, min(SCHED_MAX_F, float(v)))
+    except Exception:
+        return 80.0
+
+
+def _default_schedule():
+    return {"enabled": False, "off_temp_f": 80.0, "windows": []}
+
+
+def _load_schedule():
+    """Read schedule.json (persisted across reboots). Returns a dict; falls back
+    to a disabled default on any error."""
+    try:
+        import ujson
+        with open(SCHEDULE_FILE) as f:
+            s = ujson.loads(f.read())
+        if isinstance(s, dict):
+            return s
+    except Exception:
+        pass
+    return _default_schedule()
+
+
+def _apply_schedule_cmd(sched, ui_state):
+    """Validate + persist a schedule pushed from the app, then force an immediate
+    re-evaluation. Never raises."""
+    try:
+        import ujson
+        if not isinstance(sched, dict):
+            return
+        clean = {
+            "enabled":    bool(sched.get("enabled", False)),
+            "off_temp_f": _clamp_sched_f(sched.get("off_temp_f", 80)),
+            "windows":    [],
+        }
+        for w in sched.get("windows", []):
+            try:
+                clean["windows"].append({
+                    "enabled": bool(w.get("enabled", True)),
+                    "days":    [int(d) % 7 for d in w.get("days", [])],
+                    "start":   max(0, min(1439, int(w.get("start", 0)))),
+                    "end":     max(0, min(1439, int(w.get("end", 0)))),
+                    "temp_f":  _clamp_sched_f(w.get("temp_f", 100)),
+                })
+            except Exception:
+                pass
+        with open(SCHEDULE_FILE, "w") as f:
+            f.write(ujson.dumps(clean))
+        ui_state["schedule"] = clean
+        ui_state["_sched_state"] = None   # force re-apply on next evaluation
+    except Exception:
+        pass
+
+
+def _schedule_desired(sched, wd, now_min):
+    """Return (active, temp_f) for the schedule at weekday wd (0=Mon…6=Sun) and
+    now_min minutes-after-midnight. active is True while a heat window covers now,
+    False when holding at off_temp_f, or None when the schedule is off."""
+    if not sched or not sched.get("enabled"):
+        return (None, None)
+    best = None
+    for w in sched.get("windows", []):
+        if not w.get("enabled", True):
+            continue
+        days  = w.get("days", [])
+        start = w.get("start", 0)
+        end   = w.get("end", 0)
+        active = False
+        if end > start:                                   # same-day window
+            active = (wd in days) and (start <= now_min < end)
+        else:                                             # wraps past midnight
+            if (wd in days) and now_min >= start:
+                active = True                             # evening portion (today)
+            elif ((wd - 1) % 7) in days and now_min < end:
+                active = True                             # morning portion (yesterday's window)
+        if active:
+            t = w.get("temp_f", 100)
+            if best is None or t > best:
+                best = t
+    if best is None:
+        return (False, sched.get("off_temp_f", 80))
+    return (True, best)
 
 
 # ── BLE WiFi provisioning ─────────────────────────────────────────────────────
@@ -1755,6 +1855,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
     _wifi_gc_ms    = ticks_ms()   # GC runs on its own 30 s cadence
     _wifi_fail_n   = 0            # consecutive 10 s intervals without WiFi
     _reset_check_ms = ticks_ms()  # weekly-reboot clock check cadence
+    _sched_check_ms = ticks_ms()  # smart-schedule evaluation cadence
     _boot_ticks     = ticks_ms()  # uptime reference for the anti-loop guard
 
     # ── BLE setup ─────────────────────────────────────────────────────────────
@@ -1800,7 +1901,11 @@ def main(loop_ms=CONTROL_LOOP_MS):
         "bl_brightness":  BL_FULL_DUTY,   # 0-100 %; persists across dim/sleep cycles
         "bt_connected":   False,
         "wifi_connected": _wlan.isconnected(),
+        "schedule":       None,    # loaded from schedule.json just below
+        "_sched_active":  False,   # a heat window is currently active
+        "_sched_state":   None,    # last-applied (active, temp) — apply on change
     }
+    ui_state["schedule"] = _load_schedule()
     raw_inputs = read_inputs()
     raw_inputs["rWaterTemp_F"] = temp_avg.update(raw_inputs.get("rWaterTemp_F", 0.0))
     inputs = apply_ui_overrides(raw_inputs, ui_state)
@@ -1859,6 +1964,33 @@ def main(loop_ms=CONTROL_LOOP_MS):
                     _machine.reset()
             except Exception:
                 pass
+
+        # ── Smart schedule evaluation ─────────────────────────────────────────
+        # On each window transition, drive the setpoint from the schedule. Between
+        # transitions the setpoint is left alone so manual nudges hold.
+        if ticks_diff(now, _sched_check_ms) >= SCHED_CHECK_MS:
+            _sched_check_ms = now
+            _sched = ui_state.get("schedule")
+            if _sched and _sched.get("enabled"):
+                try:
+                    from machine import RTC as _SRTC
+                    _sy, _smo, _sd, _swd, _shh, _smm, _sss, _ssub = _SRTC().datetime()
+                    if _sy >= 2024:                          # RTC actually NTP-synced
+                        _s_act, _s_tmp = _schedule_desired(_sched, _swd, _shh * 60 + _smm)
+                        if _s_tmp is not None:
+                            _s_key = (bool(_s_act), round(_s_tmp, 1))
+                            if _s_key != ui_state.get("_sched_state"):
+                                ui_state["_sched_state"] = _s_key
+                                if ui_state.get("eco_mode"):     # schedule owns the setpoint
+                                    ui_state["eco_mode"] = False
+                                ctrl.temp_setpoint_f = max(SCHED_MIN_F, min(SCHED_MAX_F, _s_tmp))
+                                ui_state.pop("_c_sp", None)
+                            ui_state["_sched_active"] = bool(_s_act)
+                except Exception:
+                    pass
+            else:
+                ui_state["_sched_active"] = False
+                ui_state["_sched_state"] = None
 
         # ── WiFi check + reconnect (every 10 s) ───────────────────────────────
         if ticks_diff(now, _wifi_check_ms) >= 10_000:
