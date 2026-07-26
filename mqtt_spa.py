@@ -10,6 +10,9 @@ All state (client, timers, rx buffer) lives here. Never raises.
 
 import gc
 
+# Reported to the app in spa/status so it can flag firmware updates.
+FIRMWARE_VERSION = "1.1.0"
+
 _LOG_FILE  = "mqtt.log"
 _LOG_LINES = 30
 
@@ -271,6 +274,7 @@ def _do_publish(inputs, outputs, ctrl, ui_state):
             "schedule_active": bool(ui_state.get("_sched_active", False)),
             "fault":      bool(outputs.get("xFault")),
             "fault_code": int(outputs.get("iFaultCode", 0)),
+            "fw":         FIRMWARE_VERSION,
         })
         _cl.publish(b"spa/status", msg.encode(), retain=True, qos=0)
         _log("pub OK")
