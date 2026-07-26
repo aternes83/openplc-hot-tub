@@ -242,6 +242,8 @@ def _status_signature(outputs, ctrl, ui_state):
         bool(ui_state.get("xLightRequest", False)),
         bool(ui_state.get("eco_mode", False)),
         bool(ui_state.get("max_jet_on", False)),
+        bool((ui_state.get("schedule") or {}).get("enabled", False)),
+        bool(ui_state.get("_sched_active", False)),
         bool(outputs.get("xFault")),
         int(outputs.get("iFaultCode", 0)),
     )
@@ -265,6 +267,8 @@ def _do_publish(inputs, outputs, ctrl, ui_state):
             "light":      bool(ui_state.get("xLightRequest", False)),
             "eco":        bool(ui_state.get("eco_mode", False)),
             "max_jet":    bool(ui_state.get("max_jet_on", False)),
+            "schedule_on":     bool((ui_state.get("schedule") or {}).get("enabled", False)),
+            "schedule_active": bool(ui_state.get("_sched_active", False)),
             "fault":      bool(outputs.get("xFault")),
             "fault_code": int(outputs.get("iFaultCode", 0)),
         })
