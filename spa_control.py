@@ -488,6 +488,9 @@ MAX_JET_DURATION_MS = 20 * 60 * 1000 # 20-minute MAX JET auto-off
 RESET_ENABLED       = True
 RESET_WEEKDAY       = 6              # 0=Mon … 6=Sun (machine.RTC weekday convention)
 RESET_HOUR          = 4             # 04:00 local
+RESET_MINUTE_WINDOW = 5             # only fire in the first 5 min of the hour, so the
+                                    # reboot happens exactly once (must be < the anti-loop
+                                    # uptime below; otherwise the whole 04:00 hour retriggers)
 RESET_CHECK_MS      = 30_000        # how often to test the clock (twice a minute)
 RESET_MIN_UPTIME_MS = 600_000       # anti-loop: a fresh boot can't re-reset for 10 min
 
@@ -1958,6 +1961,8 @@ def main(loop_ms=CONTROL_LOOP_MS):
                 if (_y >= 2024                              # RTC actually NTP-synced
                         and _wd == RESET_WEEKDAY
                         and _hh == RESET_HOUR
+                        and _mm < RESET_MINUTE_WINDOW        # only the first few minutes,
+                                                            # so it fires once, not all hour
                         and ticks_diff(now, _boot_ticks) >= RESET_MIN_UPTIME_MS):
                     write_outputs({})                       # de-energize all loads first
                     import machine as _machine
