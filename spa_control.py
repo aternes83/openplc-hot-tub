@@ -185,7 +185,7 @@ class SpaController:
 
         # Status/fault outputs
         self.x_fault = False
-        self.i_fault_code = 0  # 0=none, 1=no flow, 2=high limit, 3=overtemp, 4=estop
+        self.i_fault_code = 0  # 0=none, 1=no flow, 2=high limit, 3=overtemp, 4=estop, 5=temp sensor
 
         # Internal FB equivalents
         self._flow_prove = OnDelay(self.flow_prove_ms)
@@ -208,6 +208,7 @@ class SpaController:
         x_flow_switch = bool(inputs.get("xFlowSwitch", False))
         x_high_limit_ok = bool(inputs.get("xHighLimitOK", True))
         x_remote_estop_ok = bool(inputs.get("xRemoteEStopOK", True))
+        x_temp_sensor_ok = bool(inputs.get("xTempSensorOK", True))
         r_water_temp_f = float(inputs.get("rWaterTemp_F", 70.0))
 
         now = ticks_ms()
@@ -263,7 +264,8 @@ class SpaController:
         min_run_elapsed = self._pump_min_run.update(x_any_pump)
 
         x_heater = self._thermostat.update(
-            enable=(x_freeze_permissive and x_heat_active),
+            # Never heat on a bad temperature reading — fail safe.
+            enable=(x_freeze_permissive and x_heat_active and x_temp_sensor_ok),
             temp_f=r_water_temp_f,
             setpoint_f=self.temp_setpoint_f,
             hysteresis_f=self.temp_hysteresis_f,
@@ -290,6 +292,10 @@ class SpaController:
         elif x_spa_enable and (r_water_temp_f > self.max_safe_temp_f):
             self.x_fault = True
             self.i_fault_code = 3
+        elif not x_temp_sensor_ok:
+            # Water-temp sensor missing / disconnected / implausible — fail safe.
+            self.x_fault = True
+            self.i_fault_code = 5
         elif x_any_pump and flow_proven and (not x_flow_switch):
             self.x_fault = True
             self.i_fault_code = 1
@@ -1069,8 +1075,20 @@ def update_touch_ui(touch, ui_state, ctrl, now_ms, lcd=None):
 
     x, y = point
 
-    # ── Brightness slider: immediate update on drag, no debounce delay ───────
+    # ── Brightness slider ────────────────────────────────────────────────────
+    # Debounced like every other control: a single stray sample (EMI when the
+    # heater relay switches, or XPT2046 noise) must NOT move brightness — that
+    # was slamming the backlight to ~5% at random until the next touch/reboot.
+    # A real drag is held across consecutive samples, so it still responds.
     if _touch_button_at(x, y) == "brightness_slider":
+        if ui_state.get("touch_button") != "brightness_slider":
+            # First sample on the slider — start the debounce clock, don't act.
+            ui_state["touch_button"] = "brightness_slider"
+            ui_state["_touch_press_ms"] = now_ms
+            return
+        press_ms = ui_state.get("_touch_press_ms")
+        if press_ms is not None and ticks_diff(now_ms, press_ms) < TOUCH_DEBOUNCE_MS:
+            return   # not held long enough yet — filters single-sample noise
         bx, _by, bw, _bh = UI_BUTTONS["brightness_slider"]
         _vis_w = 130   # visual slider width (independent of extended touch height)
         pct = max(5, min(100, int((x - bx) * 100 // _vis_w)))
@@ -1459,16 +1477,129 @@ def render_hmi(lcd, inputs, outputs, ctrl, ui_state, full=False):
             _report_hmi_error("HMI: render failed", err)
 
 
+# ── Water temperature sensor ──────────────────────────────────────────────────
+# read_water_temp_f() dispatches to a configured driver so one firmware image
+# supports different sensors across retrofit spas. First prototype: DS18B20
+# (1-Wire). The ~750 ms conversion is polled across control cycles (never blocks
+# the loop); read_water_temp_f() returns the last good reading. Fails SAFE — a
+# missing / CRC-failing / out-of-range sensor reports xTempSensorOK=False, which
+# raises fault code 5 and disables the heater.
+#
+# config.json (optional; defaults to DS18B20 on GPIO0):
+#   "sensor": { "type": "ds18b20", "pin": 0, "offset_f": 0.0 }
+#   "sensor": { "type": "none" }        # bench/dev: stub, no sensor
+
+SENSOR_DEFAULT_PIN   = 0        # GPIO0 1-Wire idles high via pull-up → boot unaffected
+DS18B20_CONVERT_MS   = 800      # 12-bit conversion (~750 ms) + margin
+DS18B20_FAIL_LIMIT   = 5        # consecutive bad reads before declaring a fault
+TEMP_PLAUSIBLE_MIN_F = 20.0     # below this = open/short/ice — implausible for spa water
+TEMP_PLAUSIBLE_MAX_F = 200.0    # above this = fault; real over-temp handled by high-limit
+
+_temp_sensor = None
+
+
+class DS18B20Sensor:
+    """Non-blocking DS18B20 (1-Wire) reader. poll() advances a convert/read
+    state machine; read_f() returns the last good °F; faulted() is True until the
+    first good read and after DS18B20_FAIL_LIMIT consecutive failures."""
+
+    def __init__(self, pin, offset_f=0.0):
+        self.offset_f = float(offset_f)
+        self._last_f = None
+        self._fail = DS18B20_FAIL_LIMIT   # start faulted until the first good read
+        self._state = "idle"
+        self._t0 = 0
+        self.ow = None
+        self.rom = None
+        try:
+            import onewire, ds18x20
+            self.ow = ds18x20.DS18X20(onewire.OneWire(Pin(int(pin))))
+            roms = self.ow.scan()
+            self.rom = roms[0] if roms else None
+        except Exception as e:
+            _log_hmi("temp: DS18B20 init failed: %s" % e)
+
+    def poll(self, now_ms):
+        if self.ow is None:
+            return
+        if self.rom is None:
+            # Re-scan every ~3 s in case the probe is connected after boot.
+            if ticks_diff(now_ms, self._t0) >= 3000:
+                self._t0 = now_ms
+                try:
+                    roms = self.ow.scan()
+                    if roms:
+                        self.rom = roms[0]
+                except Exception:
+                    pass
+            if self.rom is None:
+                self._note_fail()
+                return
+        if self._state == "idle":
+            try:
+                self.ow.convert_temp()
+                self._t0 = now_ms
+                self._state = "converting"
+            except Exception:
+                self._note_fail()
+        elif self._state == "converting":
+            if ticks_diff(now_ms, self._t0) >= DS18B20_CONVERT_MS:
+                self._state = "idle"
+                try:
+                    c = self.ow.read_temp(self.rom)
+                except Exception:
+                    c = None
+                if c is None:
+                    self._note_fail()
+                else:
+                    f = c * 9.0 / 5.0 + 32.0 + self.offset_f
+                    if TEMP_PLAUSIBLE_MIN_F <= f <= TEMP_PLAUSIBLE_MAX_F:
+                        self._last_f = f
+                        self._fail = 0
+                    else:
+                        self._note_fail()
+
+    def _note_fail(self):
+        if self._fail <= DS18B20_FAIL_LIMIT:
+            self._fail += 1
+
+    def read_f(self):
+        return self._last_f
+
+    def faulted(self):
+        return self._last_f is None or self._fail >= DS18B20_FAIL_LIMIT
+
+
+def _init_temp_sensor(cfg):
+    """Build the configured temperature sensor (called once at startup)."""
+    global _temp_sensor
+    cfg = cfg or {}
+    stype = cfg.get("type", "ds18b20")
+    if stype == "ds18b20":
+        pin = cfg.get("pin", SENSOR_DEFAULT_PIN)
+        _temp_sensor = DS18B20Sensor(pin, cfg.get("offset_f", 0.0))
+        _log_hmi("temp: DS18B20 gpio=%s rom=%s" % (pin, _temp_sensor.rom))
+    else:  # "none" or unknown → bench stub (constant), never faults
+        _temp_sensor = None
+        _log_hmi("temp: no sensor (stub)")
+
+
 def read_water_temp_f():
-    """
-    Replace with your ADC + sensor conversion to Fahrenheit.
-    """
-    return 95.0
+    """Latest water temperature (°F). Non-blocking. Returns a safe non-heating
+    default until the first good reading; sensor health is exposed via
+    xTempSensorOK (see read_inputs), which gates the heater."""
+    s = _temp_sensor
+    if s is None:
+        return 95.0            # bench stub (no sensor configured)
+    s.poll(ticks_ms())
+    v = s.read_f()
+    return v if v is not None else 70.0
 
 
 def read_inputs():
     values = {name: bool(pin.value()) for name, pin in IN.items()}
     values["rWaterTemp_F"] = read_water_temp_f()
+    values["xTempSensorOK"] = (_temp_sensor is None) or (not _temp_sensor.faulted())
     return values
 
 
@@ -1840,6 +1971,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
     # ── Network state (WiFi status + reconnect) ───────────────────────────────
     _wifi_ssid, _wifi_pwd = "", ""
     _mqtt_host, _mqtt_port, _mqtt_user, _mqtt_pw = "", 1883, "", ""
+    _sensor_cfg = None
     try:
         import ujson as _j
         with open("config.json") as _jf:
@@ -1850,8 +1982,10 @@ def main(loop_ms=CONTROL_LOOP_MS):
         _mqtt_port = int(_wc.get("mqtt_port", 1883))
         _mqtt_user = _wc.get("mqtt_user", "")
         _mqtt_pw   = _wc.get("mqtt_password", "")
+        _sensor_cfg = _wc.get("sensor")
     except Exception:
         pass
+    _init_temp_sensor(_sensor_cfg)   # None (absent/failed) → default DS18B20 on GPIO0
     import network as _net
     _wlan = _net.WLAN(_net.STA_IF)
     _wifi_check_ms = ticks_ms()   # run first check immediately
