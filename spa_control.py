@@ -1891,8 +1891,21 @@ def _wifi_scan_reply(ble, tx_h, conn_h, mtu):
     _ble_notify(ble, tx_h, conn_h, mtu, '{"scan":"end"}')
 
 
+def _get_device_id(explicit):
+    """Stable per-board id for multi-tenant topics: config's device_id if set,
+    else the hardware unique id (hex). Empty only if machine id is unavailable."""
+    if explicit:
+        return str(explicit)
+    try:
+        import ubinascii, machine
+        return ubinascii.hexlify(machine.unique_id()).decode()
+    except Exception:
+        return ""
+
+
 def _broker_reply(ble, tx_h, conn_h, mtu):
-    """Send the board's MQTT broker settings so the app can auto-configure."""
+    """Send the board's MQTT broker settings + device_id so the app can
+    auto-configure and subscribe to this board's per-device topics."""
     import ujson
     cfg = {}
     try:
@@ -1907,6 +1920,7 @@ def _broker_reply(ble, tx_h, conn_h, mtu):
         "port": int(cfg.get("mqtt_port", 8883)),
         "user": cfg.get("mqtt_user", ""),
         "pw":   cfg.get("mqtt_password", ""),
+        "device_id": _get_device_id(cfg.get("device_id")),
     }}
     _ble_notify(ble, tx_h, conn_h, mtu, ujson.dumps(payload))
 
@@ -1972,6 +1986,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
     _wifi_ssid, _wifi_pwd = "", ""
     _mqtt_host, _mqtt_port, _mqtt_user, _mqtt_pw = "", 1883, "", ""
     _sensor_cfg = None
+    _dev_id_cfg = None
     try:
         import ujson as _j
         with open("config.json") as _jf:
@@ -1983,9 +1998,11 @@ def main(loop_ms=CONTROL_LOOP_MS):
         _mqtt_user = _wc.get("mqtt_user", "")
         _mqtt_pw   = _wc.get("mqtt_password", "")
         _sensor_cfg = _wc.get("sensor")
+        _dev_id_cfg = _wc.get("device_id")
     except Exception:
         pass
     _init_temp_sensor(_sensor_cfg)   # None (absent/failed) → default DS18B20 on GPIO0
+    _device_id = _get_device_id(_dev_id_cfg)   # per-device MQTT topics
     import network as _net
     _wlan = _net.WLAN(_net.STA_IF)
     _wifi_check_ms = ticks_ms()   # run first check immediately
@@ -2056,7 +2073,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
         try:
             import mqtt_spa as _mqtt
             _mqtt.setup(_mqtt_host, _mqtt_port, _mqtt_user, _mqtt_pw,
-                        lambda p: _ble_apply_cmd(p, ui_state, ctrl))
+                        lambda p: _ble_apply_cmd(p, ui_state, ctrl), _device_id)
         except Exception:
             _mqtt = None
 
