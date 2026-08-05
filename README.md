@@ -210,6 +210,51 @@ GPIO22 ──[470 Ω]──┐
 - Avoid `GPIO45`/`GPIO46` as general outputs.
 - Avoid `GPIO26..GPIO37` (commonly tied to module flash/PSRAM).
 
+## Water Temperature Sensor (DS18B20)
+
+The controller regulates from a water-temp probe (prototype: **DS18B20**, 1-Wire).
+Independent over-temp safety is still the hardware high-limit on `xHighLimitOK` —
+the software sensor is the *regulating* sensor only.
+
+### Wiring — 1-Wire on `GPIO0`
+
+| DS18B20 | Connect To |
+|---|---|
+| `VDD` (red) | 3.3V |
+| `GND` (black) | Common GND |
+| `DQ` (yellow) | `GPIO0` |
+| pull-up | **4.7 kΩ between `DQ` and 3.3V** (required) |
+
+```text
+      3.3V ──┬───────────── VDD (DS18B20)
+             │
+           [4.7kΩ]
+             │
+   GPIO0 ────┴───────────── DQ
+      GND ───────────────── GND
+```
+
+`GPIO0` is a boot-strap pin, but 1-Wire idles **high** through the 4.7 kΩ pull-up,
+so normal boot is unaffected. Don't hold `DQ`/BOOT low during power-up. Put the
+probe in a thermowell in flowing water downstream of the heater; keep the cable
+away from relay/AC wiring. Requires a MicroPython build with `onewire` + `ds18x20`
+(standard ESP32 build includes them).
+
+### Behavior & config
+
+- Non-blocking: the ~750 ms conversion is polled across control cycles.
+- **Fail-safe:** a missing / CRC-failing / out-of-range probe sets `xTempSensorOK`
+  false → **fault code 5** and the heater is disabled. Hot-plug is supported — the
+  driver re-scans every ~3 s, so connecting the probe clears the fault automatically.
+- Optional `config.json` block (defaults to DS18B20 on `GPIO0` if omitted):
+
+```json
+"sensor": { "type": "ds18b20", "pin": 0, "offset_f": 0.0 }
+"sensor": { "type": "none" }
+```
+
+`offset_f` trims thermowell/placement error. `"none"` restores the bench stub.
+
 ## Commissioning Checklist
 
 1. Verify every GPIO against your exact DevKitC-1 board revision.
