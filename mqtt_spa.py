@@ -26,6 +26,12 @@ _cl      = None      # MQTTClient or None when disconnected
 _rx_buf  = []        # inbound payloads awaiting dispatch
 _ready   = False     # True after setup() called with a non-empty host
 
+# Per-device topics for multi-tenant operation (many spas / users on one broker).
+# device_id defaults to the board's hardware id; empty falls back to legacy topics.
+_device_id    = ""
+_status_topic = b"spa/status"
+_cmd_topic    = b"spa/commands"
+
 # Timer state — None means "not yet initialised, use first-connect delay"
 _connect_ms = None   # last connect attempt ticks
 _check_ms   = 0
@@ -67,16 +73,26 @@ def _log(msg):
 
 # ── public API ────────────────────────────────────────────────────────────────
 
-def setup(host, port, user, pwd, cmd_handler):
+def setup(host, port, user, pwd, cmd_handler, device_id=""):
     """
     Configure MQTT credentials and command callback.  Call once at startup.
 
-    cmd_handler(payload_bytes) is called for each message on spa/commands.
+    cmd_handler(payload_bytes) is called for each message on the commands topic.
+    With a device_id the topics are spa/<id>/status and spa/<id>/commands
+    (multi-tenant); empty keeps the legacy spa/status and spa/commands.
     Calling setup() resets the client so the next tick() reconnects fresh.
     """
     global _host, _port, _user, _pwd, _cmd_cb
     global _ready, _cl, _connect_ms, _check_ms, _pub_ms
+    global _device_id, _status_topic, _cmd_topic
     _host, _port, _user, _pwd, _cmd_cb = host, int(port), user, pwd, cmd_handler
+    _device_id = device_id or ""
+    if _device_id:
+        _status_topic = ("spa/%s/status" % _device_id).encode()
+        _cmd_topic    = ("spa/%s/commands" % _device_id).encode()
+    else:
+        _status_topic = b"spa/status"
+        _cmd_topic    = b"spa/commands"
     _ready      = bool(host)
     _cl         = None
     _connect_ms = None   # triggers first-connect delay logic in tick()
@@ -89,7 +105,7 @@ def setup(host, port, user, pwd, cmd_handler):
             if hasattr(_tls_buf, 'cl') and _tls_buf.cl is not None:
                 _cl = _tls_buf.cl
                 _cl.set_callback(_on_msg)   # wire our callback
-                _cl.subscribe(b"spa/commands")
+                _cl.subscribe(_cmd_topic)
                 _tls_buf.cl = None
                 gc.collect()
                 _log("boot-conn ok free=%d" % gc.mem_free())
@@ -214,7 +230,7 @@ def _do_connect(_t):
         )
         cl.set_callback(_on_msg)
         cl.connect()
-        cl.subscribe(b"spa/commands")
+        cl.subscribe(_cmd_topic)
         gc.collect()
         _cl = cl
         _log("connected free=%d" % gc.mem_free())
@@ -257,6 +273,7 @@ def _do_publish(inputs, outputs, ctrl, ui_state):
     try:
         import ujson as _j
         msg = _j.dumps({
+            "id":         _device_id,
             "temp_f":     round(inputs.get("rWaterTemp_F", 0.0), 1),
             "setpoint":   round(ctrl.temp_setpoint_f, 1),
             "heater":     bool(outputs.get("xHeater")),
@@ -276,7 +293,7 @@ def _do_publish(inputs, outputs, ctrl, ui_state):
             "fault_code": int(outputs.get("iFaultCode", 0)),
             "fw":         FIRMWARE_VERSION,
         })
-        _cl.publish(b"spa/status", msg.encode(), retain=True, qos=0)
+        _cl.publish(_status_topic, msg.encode(), retain=True, qos=0)
         _log("pub OK")
     except Exception as e:
         _log("pub failed: %s" % e)
