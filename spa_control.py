@@ -21,8 +21,14 @@ except ImportError:  # fallback for local simulation
     import time as time_mod
 
 try:
-    from machine import Pin, SPI, PWM
+    from machine import Pin, SPI, PWM, disable_irq, enable_irq
 except ImportError:  # local testing stub
+    def disable_irq():
+        return 0
+
+    def enable_irq(_state):
+        pass
+
     class PWM:  # type: ignore
         def __init__(self, pin, freq=1000, duty_u16=65535):
             pass
@@ -33,6 +39,7 @@ except ImportError:  # local testing stub
         IN = 0
         OUT = 1
         PULL_UP = 2
+        OPEN_DRAIN = 3
 
         def __init__(self, _pin, mode=IN, pull=None, value=0):
             self._v = 1 if value else 0
@@ -60,6 +67,37 @@ def ticks_diff(now, then):
     if hasattr(time_mod, "ticks_diff"):
         return time_mod.ticks_diff(now, then)
     return now - then
+
+
+def ticks_add(t, delta):
+    if hasattr(time_mod, "ticks_add"):
+        return time_mod.ticks_add(t, delta)
+    return t + delta
+
+
+def _crumb(tag):
+    """Leave a breadcrumb in RTC RAM (survives a watchdog reset) marking the last
+    phase reached, so after an auto-reboot we can tell where the board hung."""
+    try:
+        import machine
+        machine.RTC().memory(tag)
+    except Exception:
+        pass
+
+
+def _sleep_us(us):
+    if hasattr(time_mod, "sleep_us"):
+        time_mod.sleep_us(us)
+
+
+def _crc8(data):
+    """Dallas/Maxim 1-Wire CRC-8. Returns 0 over a valid scratchpad (CRC byte last)."""
+    crc = 0
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = ((crc >> 1) ^ 0x8C) if (crc & 1) else (crc >> 1)
+    return crc
 
 
 class RollingAverage:
@@ -334,7 +372,9 @@ class SpaController:
 INPUT_PINS = {
     "xSpaEnable": 4,
     "xPumpRequest": 5,
-    "xHeatRequest": 6,
+    # GPIO6 was the heat-call input — now the NTC temperature ADC (NTC_DEFAULT_PIN).
+    # xHeatRequest is kept logically armed via ui_state (heat is driven by measured
+    # temp vs setpoint), so no physical input pin is needed here.
     "xPump1HighRequest": 7,
     "xPump2Request": 15,
     "xPump3Request": 16,
@@ -385,7 +425,11 @@ DISPLAY_PINS = {
 
 # Hosyond 4.0" ST7796S SPI modules: LED/BL is active-high (3.3 V on = backlight on).
 DISPLAY_BL_ACTIVE_LOW = False
-DISPLAY_SPI_BAUDRATE = 40_000_000
+# 20 MHz, not 40 MHz: 40 MHz is marginal over breadboard jumpers and intermittently
+# desyncs the ST7796 (panel goes white while the ESP32 keeps running fine). 20 MHz
+# has large signal-integrity margin and still redraws the whole 480×320 frame in
+# ~0.12 s. Raise back toward 40 MHz only on a proper PCB with short traces.
+DISPLAY_SPI_BAUDRATE = 20_000_000
 TOUCH_SPI_BAUDRATE = 2_500_000
 CONTROL_LOOP_MS = 50
 # Hosyond 4.0" ST7796S + XPT2046 touch mapping for rotation=1 (480x320).
@@ -1479,18 +1523,51 @@ def render_hmi(lcd, inputs, outputs, ctrl, ui_state, full=False):
 
 # ── Water temperature sensor ──────────────────────────────────────────────────
 # read_water_temp_f() dispatches to a configured driver so one firmware image
-# supports different sensors across retrofit spas. First prototype: DS18B20
-# (1-Wire). The ~750 ms conversion is polled across control cycles (never blocks
-# the loop); read_water_temp_f() returns the last good reading. Fails SAFE — a
-# missing / CRC-failing / out-of-range sensor reports xTempSensorOK=False, which
-# raises fault code 5 and disables the heater.
+# supports different sensors across retrofit spas.
 #
-# config.json (optional; defaults to DS18B20 on GPIO0):
-#   "sensor": { "type": "ds18b20", "pin": 0, "offset_f": 0.0 }
-#   "sensor": { "type": "none" }        # bench/dev: stub, no sensor
+# DEFAULT: NTC thermistor on an ADC pin (analog voltage divider). This is the
+# right sensor for the retrofit market — most spa packs (Balboa, Gecko, Sundance,
+# …) already run a 10 k NTC that can be reused — and it has NO bit-bang timing, so
+# unlike the DS18B20 (1-Wire) it can never disable interrupts and hard-lock the
+# ESP32-S3's WiFi. The NTC curve is calibrated in the app (2-point Beta fit) and
+# pushed down via a `set_temp_cal` command, so it works with ANY unknown NTC.
+#
+# The DS18B20 driver is kept for boards that use one, but is no longer the default
+# (it locks up the S3 when combined with WiFi — see git history).
+#
+# Wiring (NTC, default):  3.3V ── R_fixed ──┬── ADC pin ── NTC ── GND
+#   Vadc = 3.3·R_ntc/(R_fixed+R_ntc)  →  R_ntc = R_fixed·Vadc/(Vsupply−Vadc)
+#   Temp via Beta model:  1/T = 1/T0 + (1/Beta)·ln(R/R0)   (T in Kelvin)
+#
+# Fails SAFE — an open/shorted/out-of-range probe reports xTempSensorOK=False,
+# which raises fault code 5 and disables the heater.
+#
+# config.json (optional; defaults to NTC on the ADC pin below):
+#   "sensor": {"type":"ntc","pin":6,"r_fixed":10000,"r0":10000,"t0_c":25,"beta":3950,"offset_f":0}
+#   "sensor": {"type":"ds18b20","pin":0,"offset_f":0.0}   # legacy 1-Wire probe
+#   "sensor": {"type":"none"}                             # bench/dev stub, no sensor
 
+# ── NTC thermistor (default) ──────────────────────────────────────────────────
+NTC_DEFAULT_PIN      = 6        # GPIO6 = ADC1_CH5 (ADC1 is WiFi-safe; ADC2 is not).
+                                # Repurposed from the vestigial heat-call input — a
+                                # real temp sensor makes an external heat call moot.
+NTC_READ_INTERVAL_MS = 1000     # ADC reads are cheap + instant; 1 s is plenty
+NTC_OVERSAMPLE       = 16       # averaged samples to knock down noise/EMI on long leads
+NTC_VSUPPLY_V        = 3.3      # divider top rail (absorbed by calibration if slightly off)
+NTC_R_OPEN_OHMS      = 500000.0 # above → probe open / disconnected → fault
+NTC_R_SHORT_OHMS     = 200.0    # below → probe shorted → fault
+# Default calibration: generic 10 k NTC, Beta 3950 @ 25 °C. Overwritten the moment
+# the app pushes a calibrated profile via set_temp_cal (persisted to config.json).
+NTC_DEFAULT_CAL      = {"r_fixed": 10000.0, "r0": 10000.0, "t0_c": 25.0,
+                        "beta": 3950.0, "offset_f": 0.0}
+
+# ── DS18B20 (legacy 1-Wire) ───────────────────────────────────────────────────
 SENSOR_DEFAULT_PIN   = 0        # GPIO0 1-Wire idles high via pull-up → boot unaffected
 DS18B20_CONVERT_MS   = 800      # 12-bit conversion (~750 ms) + margin
+DS18B20_READ_INTERVAL_MS = 30000  # rest between read cycles. 1-Wire bit-bang disables
+                                  # IRQs for a few ms per read; combined with WiFi this
+                                  # can lock up the ESP32-S3 (mitigated by PM_NONE below).
+                                  # Spa water is slow — 30 s is plenty.
 DS18B20_FAIL_LIMIT   = 5        # consecutive bad reads before declaring a fault
 TEMP_PLAUSIBLE_MIN_F = 20.0     # below this = open/short/ice — implausible for spa water
 TEMP_PLAUSIBLE_MAX_F = 200.0    # above this = fault; real over-temp handled by high-limit
@@ -1499,9 +1576,13 @@ _temp_sensor = None
 
 
 class DS18B20Sensor:
-    """Non-blocking DS18B20 (1-Wire) reader. poll() advances a convert/read
-    state machine; read_f() returns the last good °F; faulted() is True until the
-    first good read and after DS18B20_FAIL_LIMIT consecutive failures."""
+    """Non-blocking DS18B20 (1-Wire) reader using the stock onewire/ds18x20
+    modules (their bit-bang timing is reliable). The one downside — reset()
+    disabling interrupts for ~550 µs — is mitigated by (a) reading only every
+    DS18B20_READ_INTERVAL_MS, (b) WiFi modem-sleep OFF (PM_NONE, set in main), and
+    (c) the hardware watchdog as a backstop. poll() advances a convert/read state
+    machine; read_f() returns the last good °F; faulted() is True until the first
+    good read and after DS18B20_FAIL_LIMIT consecutive failures."""
 
     def __init__(self, pin, offset_f=0.0):
         self.offset_f = float(offset_f)
@@ -1509,6 +1590,7 @@ class DS18B20Sensor:
         self._fail = DS18B20_FAIL_LIMIT   # start faulted until the first good read
         self._state = "idle"
         self._t0 = 0
+        self._next_ms = 0                 # earliest tick for the next convert (0 = now)
         self.ow = None
         self.rom = None
         try:
@@ -1523,8 +1605,7 @@ class DS18B20Sensor:
         if self.ow is None:
             return
         if self.rom is None:
-            # Re-scan every ~3 s in case the probe is connected after boot.
-            if ticks_diff(now_ms, self._t0) >= 3000:
+            if ticks_diff(now_ms, self._t0) >= 3000:   # re-scan for a hot-plugged probe
                 self._t0 = now_ms
                 try:
                     roms = self.ow.scan()
@@ -1536,16 +1617,22 @@ class DS18B20Sensor:
                 self._note_fail()
                 return
         if self._state == "idle":
+            if ticks_diff(now_ms, self._next_ms) < 0:
+                return   # resting between read cycles
             try:
+                _crumb(b"ow-conv")
                 self.ow.convert_temp()
                 self._t0 = now_ms
                 self._state = "converting"
             except Exception:
                 self._note_fail()
+                self._next_ms = ticks_add(now_ms, DS18B20_READ_INTERVAL_MS)
         elif self._state == "converting":
             if ticks_diff(now_ms, self._t0) >= DS18B20_CONVERT_MS:
                 self._state = "idle"
+                self._next_ms = ticks_add(now_ms, DS18B20_READ_INTERVAL_MS)
                 try:
+                    _crumb(b"ow-read")
                     c = self.ow.read_temp(self.rom)
                 except Exception:
                     c = None
@@ -1567,6 +1654,107 @@ class DS18B20Sensor:
         return self._last_f
 
     def faulted(self):
+        return self.rom is None or self._last_f is None or self._fail >= DS18B20_FAIL_LIMIT
+
+    def read_ohms(self):
+        return None   # not an analog sensor; no resistance to report
+
+
+class NTCSensor:
+    """NTC thermistor read via an ADC voltage divider — no bit-bang timing, so it
+    can never disable interrupts or lock up WiFi. Wiring:
+
+        3.3V ── R_fixed ──┬── ADC pin ── NTC ── GND
+
+    poll() samples the ADC (oversampled) every NTC_READ_INTERVAL_MS, back-solves
+    the probe resistance, and converts it to °F using a Beta-model calibration
+    (set at init or pushed live via set_cal / the set_temp_cal command). read_f()
+    returns the last good °F; read_ohms() exposes the live resistance so the app's
+    calibration wizard can capture (R, T) points; faulted() is True until the first
+    good read and while the probe reads open/short/implausible."""
+
+    def __init__(self, pin, cal=None):
+        self._last_f = None
+        self._fail = DS18B20_FAIL_LIMIT   # start faulted until the first good read
+        self._next_ms = 0
+        self._r = None                    # last computed resistance (Ω); None until first read
+        self.adc = None
+        c = dict(NTC_DEFAULT_CAL)
+        if cal:
+            c.update(cal)
+        self.set_cal(c)
+        try:
+            from machine import ADC
+            self.adc = ADC(Pin(int(pin)), atten=ADC.ATTN_11DB)   # ~0–3.1 V usable range
+        except Exception as e:
+            _log_hmi("temp: NTC init failed: %s" % e)
+
+    def set_cal(self, cal):
+        """Apply calibration coefficients (partial dicts merge onto current values,
+        so an offset-only or single-field update works)."""
+        self.r_fixed  = float(cal.get("r_fixed",  getattr(self, "r_fixed",  10000.0)))
+        self.r0       = float(cal.get("r0",       getattr(self, "r0",       10000.0)))
+        t0_c          = float(cal.get("t0_c",     getattr(self, "_t0_c",    25.0)))
+        self._t0_c    = t0_c
+        self.t0_k     = t0_c + 273.15
+        self.beta     = float(cal.get("beta",     getattr(self, "beta",     3950.0)))
+        self.offset_f = float(cal.get("offset_f", getattr(self, "offset_f", 0.0)))
+        self.vsupply  = float(cal.get("vsupply",  getattr(self, "vsupply",  NTC_VSUPPLY_V)))
+
+    def _read_resistance(self):
+        adc = self.adc
+        acc = 0
+        for _ in range(NTC_OVERSAMPLE):
+            acc += adc.read_uv()                    # calibrated µV (uses the eFuse curve)
+        v = (acc / NTC_OVERSAMPLE) / 1_000_000.0    # → volts
+        if v <= 0.001:                              # rail-low → shorted probe
+            return NTC_R_SHORT_OHMS * 0.5
+        if v >= self.vsupply - 0.001:               # rail-high → open probe
+            return NTC_R_OPEN_OHMS * 2.0
+        return self.r_fixed * v / (self.vsupply - v)
+
+    def _r_to_f(self, r):
+        import math
+        inv_t = 1.0 / self.t0_k + (1.0 / self.beta) * math.log(r / self.r0)
+        t_c = 1.0 / inv_t - 273.15
+        return t_c * 9.0 / 5.0 + 32.0 + self.offset_f
+
+    def poll(self, now_ms):
+        if self.adc is None:
+            return
+        if ticks_diff(now_ms, self._next_ms) < 0:
+            return
+        self._next_ms = ticks_add(now_ms, NTC_READ_INTERVAL_MS)
+        try:
+            r = self._read_resistance()
+        except Exception:
+            r = None
+        self._r = r
+        if r is None or r <= NTC_R_SHORT_OHMS or r >= NTC_R_OPEN_OHMS:
+            self._note_fail()
+            return
+        try:
+            f = self._r_to_f(r)
+        except Exception:
+            self._note_fail()
+            return
+        if TEMP_PLAUSIBLE_MIN_F <= f <= TEMP_PLAUSIBLE_MAX_F:
+            self._last_f = f
+            self._fail = 0
+        else:
+            self._note_fail()
+
+    def _note_fail(self):
+        if self._fail <= DS18B20_FAIL_LIMIT:
+            self._fail += 1
+
+    def read_f(self):
+        return self._last_f
+
+    def read_ohms(self):
+        return self._r
+
+    def faulted(self):
         return self._last_f is None or self._fail >= DS18B20_FAIL_LIMIT
 
 
@@ -1574,8 +1762,12 @@ def _init_temp_sensor(cfg):
     """Build the configured temperature sensor (called once at startup)."""
     global _temp_sensor
     cfg = cfg or {}
-    stype = cfg.get("type", "ds18b20")
-    if stype == "ds18b20":
+    stype = cfg.get("type", "ntc")   # NTC (analog) is the default — see header note
+    if stype == "ntc":
+        pin = cfg.get("pin", NTC_DEFAULT_PIN)
+        _temp_sensor = NTCSensor(pin, cfg)
+        _log_hmi("temp: NTC adc=%s beta=%s r_fixed=%s" % (pin, _temp_sensor.beta, _temp_sensor.r_fixed))
+    elif stype == "ds18b20":
         pin = cfg.get("pin", SENSOR_DEFAULT_PIN)
         _temp_sensor = DS18B20Sensor(pin, cfg.get("offset_f", 0.0))
         _log_hmi("temp: DS18B20 gpio=%s rom=%s" % (pin, _temp_sensor.rom))
@@ -1591,14 +1783,31 @@ def read_water_temp_f():
     s = _temp_sensor
     if s is None:
         return 95.0            # bench stub (no sensor configured)
-    s.poll(ticks_ms())
+    try:
+        s.poll(ticks_ms())    # never let a 1-Wire hiccup crash the control loop
+    except Exception:
+        pass
     v = s.read_f()
     return v if v is not None else 70.0
+
+
+def read_water_ohms():
+    """Live probe resistance in Ω for analog (NTC) sensors — published in status so
+    the app's calibration wizard can capture (R, T) points. None for non-analog
+    sensors (e.g. DS18B20) or when no reading is available yet."""
+    s = _temp_sensor
+    if s is None:
+        return None
+    try:
+        return s.read_ohms()
+    except Exception:
+        return None
 
 
 def read_inputs():
     values = {name: bool(pin.value()) for name, pin in IN.items()}
     values["rWaterTemp_F"] = read_water_temp_f()
+    values["rWaterOhms"] = read_water_ohms()
     values["xTempSensorOK"] = (_temp_sensor is None) or (not _temp_sensor.faulted())
     return values
 
@@ -1742,8 +1951,62 @@ def _ble_apply_cmd(raw, ui_state, ctrl):
                 ui_state["max_jet_start_ms"] = _tms()
         if "schedule" in cmd:
             _apply_schedule_cmd(cmd["schedule"], ui_state)
+        if "set_temp_cal" in cmd:
+            _apply_temp_cal(cmd["set_temp_cal"])
         ui_state.pop("_c_btn", None)
         ui_state.pop("_c_led", None)
+    except Exception:
+        pass
+
+
+# ── Temperature-sensor calibration (pushed from the app's setup wizard) ────────
+# The app derives NTC Beta-model coefficients (2-point fit or a preset) and sends
+# {"set_temp_cal": {"r_fixed":…, "r0":…, "t0_c":…, "beta":…, "offset_f":…}}.
+# We apply them to the live sensor immediately AND persist to config.json so the
+# controller keeps the calibration across reboots and runs standalone (phone off).
+
+def _apply_temp_cal(cal):
+    if not isinstance(cal, dict):
+        return
+    clean = {}
+    for k in ("r_fixed", "r0", "t0_c", "beta", "offset_f", "vsupply"):
+        if k in cal:
+            try:
+                clean[k] = float(cal[k])
+            except Exception:
+                pass
+    if not clean:
+        return
+    s = _temp_sensor
+    if s is not None and hasattr(s, "set_cal"):
+        try:
+            s.set_cal(clean)                 # take effect on the next poll
+        except Exception:
+            pass
+    _save_sensor_cal(clean)
+    _log_hmi("temp: calibration updated (%s)" % ", ".join(sorted(clean)))
+
+
+def _save_sensor_cal(cal):
+    """Merge calibration coefficients into config.json's "sensor" block, preserving
+    the pin and every other config key. Never raises."""
+    try:
+        import ujson
+        try:
+            with open("config.json") as f:
+                cfg = ujson.loads(f.read())
+        except Exception:
+            cfg = {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        sensor = cfg.get("sensor")
+        if not isinstance(sensor, dict):
+            sensor = {}
+        sensor["type"] = "ntc"
+        sensor.update(cal)
+        cfg["sensor"] = sensor
+        with open("config.json", "w") as f:
+            f.write(ujson.dumps(cfg))
     except Exception:
         pass
 
@@ -1979,6 +2242,25 @@ def main(loop_ms=CONTROL_LOOP_MS):
     except Exception:
         pass
 
+    # Record why we (re)booted + the last breadcrumb, so a watchdog recovery from
+    # a hang is diagnosable (rc=machine.reset_cause; last=phase before the hang).
+    try:
+        import machine as _mdiag
+        _rc = _mdiag.reset_cause()
+        _mem = _mdiag.RTC().memory()
+        _last = bytes(_mem).decode() if _mem else "-"
+        _fzline = "rc=%s last=%s\n" % (_rc, _last)
+        try:
+            with open("freeze.log") as _fzf:
+                _fzlines = _fzf.readlines()
+        except Exception:
+            _fzlines = []
+        with open("freeze.log", "w") as _fzf:
+            _fzf.write("".join((_fzlines + [_fzline])[-15:]))
+        _mdiag.RTC().memory(b"")
+    except Exception:
+        pass
+
     ctrl = SpaController()
     temp_avg = RollingAverage(TEMP_AVG_N)
 
@@ -2005,6 +2287,14 @@ def main(loop_ms=CONTROL_LOOP_MS):
     _device_id = _get_device_id(_dev_id_cfg)   # per-device MQTT topics
     import network as _net
     _wlan = _net.WLAN(_net.STA_IF)
+    # Disable WiFi modem-sleep for normal operation. The DS18B20 (and any bit-
+    # banged bus) disables CPU interrupts for a few ms per read; with modem-sleep
+    # active that intermittently locks up the ESP32-S3. PM_NONE keeps the modem
+    # always-on so it tolerates the gaps (fine — this is a mains-powered device).
+    try:
+        _wlan.config(pm=_net.WLAN.PM_NONE)
+    except Exception:
+        pass
     _wifi_check_ms = ticks_ms()   # run first check immediately
     _wifi_gc_ms    = ticks_ms()   # GC runs on its own 30 s cadence
     _wifi_fail_n   = 0            # consecutive 10 s intervals without WiFi
@@ -2077,7 +2367,21 @@ def main(loop_ms=CONTROL_LOOP_MS):
         except Exception:
             _mqtt = None
 
+    # Hardware watchdog: if the control loop hangs (e.g. a 1-Wire/WiFi lockup),
+    # the board auto-reboots instead of needing a manual power cycle. Timeout is
+    # comfortably above the longest legitimate single-iteration block (MQTT TLS
+    # connect, ~a few seconds).
+    _wdt = None
+    try:
+        from machine import WDT as _WDT
+        _wdt = _WDT(timeout=30000)
+    except Exception:
+        _wdt = None
+
     while True:
+        if _wdt is not None:
+            _wdt.feed()
+        _crumb(b"run")
         raw_inputs = read_inputs()
         raw_inputs["rWaterTemp_F"] = temp_avg.update(raw_inputs.get("rWaterTemp_F", 0.0))
         ui_state["_water_temp_f"] = raw_inputs["rWaterTemp_F"]
@@ -2196,12 +2500,12 @@ def main(loop_ms=CONTROL_LOOP_MS):
                         if _wifi_fail_n >= 3:
                             # Hard reset after 30 s down — active(False/True)
                             # reinits the driver and resets PM to default, so
-                            # restore PM_PERFORMANCE immediately after.
+                            # re-apply PM_NONE (see main loop) immediately after.
                             _wifi_fail_n = 0
                             _wlan.active(False)
                             _wlan.active(True)
                             try:
-                                _wlan.config(pm=_net.WLAN.PM_PERFORMANCE)
+                                _wlan.config(pm=_net.WLAN.PM_NONE)
                             except Exception:
                                 pass
                         elif not _wlan.active():

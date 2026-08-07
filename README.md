@@ -12,7 +12,7 @@ Firmware: `spa_control.py`
 |---|---:|
 | `xSpaEnable` | 4 |
 | `xPumpRequest` | 5 |
-| `xHeatRequest` | 6 |
+| `rWaterTemp` (NTC ADC) | 6 |
 | `xPump1HighRequest` | 7 |
 | `xPump2Request` | 15 |
 | `xPump3Request` | 16 |
@@ -82,7 +82,7 @@ Firmware: `spa_control.py`
 |---|---:|---|
 | `xSpaEnable` | 4 | Master spa enable command |
 | `xPumpRequest` | 5 | Pump request (P1 low unless high selected) |
-| `xHeatRequest` | 6 | Heat request |
+| `rWaterTemp` | 6 | **Water-temp NTC (analog ADC1_CH5)** — see *Water Temperature Sensor* below. (Was the heat-call input; heating is now driven by measured temp vs setpoint, so the external heat call is no longer wired.) |
 | `xPump1HighRequest` | 7 | Pump 1 high-speed request |
 | `xPump2Request` | 15 | Pump 2 single-speed request |
 | `xPump3Request` | 16 | Pump 3 single-speed request |
@@ -210,50 +210,75 @@ GPIO22 ──[470 Ω]──┐
 - Avoid `GPIO45`/`GPIO46` as general outputs.
 - Avoid `GPIO26..GPIO37` (commonly tied to module flash/PSRAM).
 
-## Water Temperature Sensor (DS18B20)
+## Water Temperature Sensor (NTC thermistor)
 
-The controller regulates from a water-temp probe (prototype: **DS18B20**, 1-Wire).
+The controller regulates from a water-temp probe. The **default and recommended**
+sensor is an **NTC thermistor** read on an analog ADC pin — the right choice for the
+retrofit market (most spa packs already run a 10 kΩ NTC that can be reused) and,
+crucially, it has **no bit-bang timing**, so it can never disable CPU interrupts.
+The earlier DS18B20 (1-Wire) driver hard-locked the ESP32-S3's WiFi and is now
+**legacy-only** (kept for boards that already use one; see below).
+
 Independent over-temp safety is still the hardware high-limit on `xHighLimitOK` —
 the software sensor is the *regulating* sensor only.
 
-### Wiring — 1-Wire on `GPIO0`
+### Wiring — NTC on `GPIO6` (ADC1_CH5)
 
-| DS18B20 | Connect To |
+| NTC probe / part | Connect To |
 |---|---|
-| `VDD` (red) | 3.3V |
-| `GND` (black) | Common GND |
-| `DQ` (yellow) | `GPIO0` |
-| pull-up | **4.7 kΩ between `DQ` and 3.3V** (required) |
+| NTC lead A | `GPIO6` (ADC node) **and** through `R_fixed` to 3.3 V |
+| NTC lead B | Common GND |
+| `R_fixed` | **10 kΩ 1% between `GPIO6` and 3.3 V** (divider top) |
+| filter (recommended) | **100 nF between `GPIO6` and GND** (EMI on long retrofit leads) |
 
 ```text
-      3.3V ──┬───────────── VDD (DS18B20)
-             │
-           [4.7kΩ]
-             │
-   GPIO0 ────┴───────────── DQ
-      GND ───────────────── GND
+      3.3V ───[ R_fixed 10kΩ ]──┬────────────── (ADC node)
+                                 │
+                              GPIO6 ── ADC1_CH5
+                                 │
+                              [ NTC probe ]
+                                 │
+      GND ──────────────────────┴───[100nF]──── GND
 ```
 
-`GPIO0` is a boot-strap pin, but 1-Wire idles **high** through the 4.7 kΩ pull-up,
-so normal boot is unaffected. Don't hold `DQ`/BOOT low during power-up. Put the
-probe in a thermowell in flowing water downstream of the heater; keep the cable
-away from relay/AC wiring. Requires a MicroPython build with `onewire` + `ds18x20`
-(standard ESP32 build includes them).
+Use an **ADC1** pin (`GPIO1–10`) — ADC2 conflicts with WiFi on the ESP32-S3.
+`GPIO6` was the old heat-call input; a real temperature sensor makes an external
+heat call redundant (heating is driven by measured temp vs setpoint), so that pin
+is repurposed. Put the probe in a thermowell in flowing water downstream of the
+heater; keep the cable away from relay/AC wiring.
+
+### Calibration (2-point, from the app)
+
+Because retrofit NTCs vary (Beta/tolerance differ by brand), the curve is
+calibrated in the SpaControl app's **Settings → Calibrate temperature sensor**
+wizard — either pick a preset (Balboa/Gecko/generic 10 k) or run a 2-point field
+calibration that fits **any** unknown probe from two thermometer readings. The app
+solves the Beta model and pushes it via a `set_temp_cal` command; the firmware
+applies it live and **persists it to `config.json`**, so the spa keeps its
+calibration across reboots and runs standalone. The board publishes the live probe
+resistance as `r_ohms` in `spa/<id>/status` for the wizard to read.
 
 ### Behavior & config
 
-- Non-blocking: the ~750 ms conversion is polled across control cycles.
-- **Fail-safe:** a missing / CRC-failing / out-of-range probe sets `xTempSensorOK`
-  false → **fault code 5** and the heater is disabled. Hot-plug is supported — the
-  driver re-scans every ~3 s, so connecting the probe clears the fault automatically.
-- Optional `config.json` block (defaults to DS18B20 on `GPIO0` if omitted):
+- Non-blocking: the ADC is oversampled (16×) every ~1 s using the calibrated
+  `read_uv()` curve.
+- **Fail-safe:** an open / shorted / out-of-range probe sets `xTempSensorOK`
+  false → **fault code 5** and the heater is disabled. Reconnecting the probe
+  clears the fault automatically.
+- Optional `config.json` block (defaults to NTC on `GPIO6` if omitted; the wizard
+  writes the calibrated values here):
 
 ```json
-"sensor": { "type": "ds18b20", "pin": 0, "offset_f": 0.0 }
-"sensor": { "type": "none" }
+"sensor": { "type": "ntc", "pin": 6, "r_fixed": 10000, "r0": 10000, "t0_c": 25, "beta": 3950, "offset_f": 0.0 }
+"sensor": { "type": "ds18b20", "pin": 0, "offset_f": 0.0 }   // legacy 1-Wire probe
+"sensor": { "type": "none" }                                  // bench stub
 ```
 
 `offset_f` trims thermowell/placement error. `"none"` restores the bench stub.
+
+> **Legacy DS18B20:** if a board must use a 1-Wire DS18B20, set `"type": "ds18b20"`
+> with `DQ` on `GPIO0` and a **4.7 kΩ** pull-up from `DQ` to 3.3 V. Note this driver
+> can intermittently lock up the ESP32-S3 when WiFi is active — prefer the NTC.
 
 ## Commissioning Checklist
 
