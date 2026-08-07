@@ -16,6 +16,7 @@ __pycache__/
 
 # Credentials — never commit
 config.json
+config.board.json
 
 # Scratch / diagnostic / recovery scripts
 boot_diag.py

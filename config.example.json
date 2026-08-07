@@ -1,0 +1,11 @@
+{
+  "_comment": "Copy to config.json and fill in. NEVER commit config.json (it is gitignored). WiFi is left blank on purpose: it is provisioned per-install from the app's Bluetooth Wi-Fi wizard, so a board is never tied to one network. flash_new_board.sh also blanks WiFi when deploying, so a flashed board always starts unprovisioned.",
+  "wifi_ssid": "",
+  "wifi_password": "",
+  "mqtt_host": "your-broker.hivemq.cloud",
+  "mqtt_port": 8883,
+  "mqtt_user": "broker-username",
+  "mqtt_password": "broker-password",
+  "utc_offset_hours": -4,
+  "sensor": { "type": "ntc", "pin": 6, "r_fixed": 10000, "r0": 10000, "t0_c": 25, "beta": 3950, "offset_f": 0.0 }
+}

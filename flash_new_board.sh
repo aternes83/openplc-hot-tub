@@ -41,6 +41,30 @@ fi
 echo "==> compiling spa_main.mpy"
 python3 -m mpy_cross -o spa_main.mpy spa_control.py
 
+echo "==> preparing board config (WiFi stripped — provisioned via the app's Wi-Fi wizard)"
+# Never bake WiFi creds into a board image: the board must start unprovisioned so
+# the app's BLE Wi-Fi wizard can join it to ANY network. Broker/MQTT creds are
+# kept so the board can reach the broker once WiFi is set. Deploys config.board.json.
+python3 - <<'PY'
+import json, os, sys
+src = "config.json"
+if not os.path.exists(src):
+    if os.path.exists("config.example.json"):
+        print("  config.json missing — using config.example.json (no real broker creds!)")
+        src = "config.example.json"
+    else:
+        sys.exit("  error: no config.json or config.example.json to deploy")
+with open(src) as f:
+    cfg = json.load(f)
+cfg.pop("_comment", None)
+cfg["wifi_ssid"] = ""        # provisioned per-install by the app's Wi-Fi wizard
+cfg["wifi_password"] = ""
+with open("config.board.json", "w") as f:
+    json.dump(cfg, f)
+kept = sorted(k for k in cfg if k not in ("wifi_ssid", "wifi_password"))
+print("  WiFi blanked; kept keys:", kept)
+PY
+
 echo "==> REPL alive check (resume)"
 python3 -m mpremote connect "$PORT" resume exec "print('ALIVE')" | grep -q ALIVE \
   || { echo "no REPL — power-cycle the board, wait 15 s, retry"; exit 1; }
@@ -54,7 +78,8 @@ python3 -m mpremote connect "$PORT" resume \
   fs cp st7796.py      :st7796.py   + \
   fs cp xpt2046.py     :xpt2046.py  + \
   fs cp _tls_buf.py    :_tls_buf.py + \
-  fs cp config.json    :config.json
+  fs cp config.board.json :config.json
+rm -f config.board.json
 
 echo "==> filesystem on board:"
 python3 -m mpremote connect "$PORT" resume fs ls
