@@ -272,9 +272,13 @@ def _do_publish(inputs, outputs, ctrl, ui_state):
     global _cl
     try:
         import ujson as _j
+        _ro = inputs.get("rWaterOhms")
         msg = _j.dumps({
             "id":         _device_id,
             "temp_f":     round(inputs.get("rWaterTemp_F", 0.0), 1),
+            # Live NTC probe resistance (Ω) for the app's calibration wizard; None
+            # for non-analog sensors or before the first read.
+            "r_ohms":     (int(_ro) if isinstance(_ro, (int, float)) else None),
             "setpoint":   round(ctrl.temp_setpoint_f, 1),
             "heater":     bool(outputs.get("xHeater")),
             # Publish ACTUAL pump outputs (not the user's setting) so the app
