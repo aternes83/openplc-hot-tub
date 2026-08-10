@@ -269,12 +269,28 @@ resistance as `r_ohms` in `spa/<id>/status` for the wizard to read.
   writes the calibrated values here):
 
 ```json
-"sensor": { "type": "ntc", "pin": 6, "r_fixed": 10000, "r0": 10000, "t0_c": 25, "beta": 3950, "offset_f": 0.0 }
+"sensor": { "type": "ntc", "pin": 6, "r_fixed": 10000, "r0": 10000, "t0_c": 25, "beta": 3950, "offset_f": 0.0 }  // generic 10k
+"sensor": { "type": "ntc", "pin": 6, "r_fixed": 10000, "r0": 30000, "t0_c": 25, "beta": 3892, "offset_f": 0.0 }  // Balboa M7 30k
 "sensor": { "type": "ds18b20", "pin": 0, "offset_f": 0.0 }   // legacy 1-Wire probe
 "sensor": { "type": "none" }                                  // bench stub
 ```
 
 `offset_f` trims thermowell/placement error. `"none"` restores the bench stub.
+
+**Supported NTC presets** (selectable in the app's calibration wizard; the 2-point
+wizard still beats any preset for an aged/unknown probe):
+
+| Preset | R₀ @ 25 °C | β (nominal) | Notes |
+|---|---:|---:|---|
+| Balboa 10k / most retrofit packs | 10 kΩ | 3950 | standard 10 kΩ divider (R1) |
+| **Balboa M7 (temp + high-limit combo)** | **30 kΩ** | **3892** | 30 kΩ NTC; works on the standard 10 kΩ R1. A 30 kΩ R1 improves cold-end resolution but isn't required. |
+| Gecko / Aeware 10k | 10 kΩ | 3970 | |
+| Generic 10k β3950 / β3435 | 10 kΩ | 3950 / 3435 | |
+
+> **Balboa M7 note:** it's a dual-element *temperature + high-limit* combo. This
+> firmware reads the **temperature** element on the ADC (above). The high-limit
+> element is independent and belongs on the hardware high-limit interlock
+> (`xHighLimitOK`, fault code 2), not the ADC.
 
 > **Legacy DS18B20:** if a board must use a 1-Wire DS18B20, set `"type": "ds18b20"`
 > with `DQ` on `GPIO0` and a **4.7 kΩ** pull-up from `DQ` to 3.3 V. Note this driver
