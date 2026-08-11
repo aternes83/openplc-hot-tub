@@ -459,6 +459,13 @@ TOUCH_SETPOINT_REPEAT_MS = 150  # auto-repeat interval for setpoint +/-
 # ── Sensor averaging ──────────────────────────────────────────────────────────
 TEMP_AVG_N = 8      # rolling-average window (samples × loop period = ~400 ms lag)
 
+# Reported-temperature update throttle. The rolling average smooths sample noise,
+# but the value still drifts every loop, so the LCD/app chase small fluctuations
+# (noticeable on a 30 k NTC, which sits in the noisier upper ADC range). The
+# *reported* water temperature therefore refreshes at most once per this interval
+# and is held steady in between — control, display and MQTT all use the held value.
+TEMP_REPORT_INTERVAL_MS = 30000
+
 # ── Backlight sleep / dim ─────────────────────────────────────────────────────
 BL_FREQ_HZ       = 1000          # PWM carrier frequency
 BL_FULL_DUTY     = 100           # % brightness when active
@@ -1791,6 +1798,25 @@ def read_water_temp_f():
     return v if v is not None else 70.0
 
 
+# Reported-temperature throttle state (see TEMP_REPORT_INTERVAL_MS). Held value +
+# the tick it was last refreshed.
+_reported_temp_f  = None
+_reported_temp_ms = 0
+
+
+def normalize_temp_f(live_f):
+    """Rate-limit the reported water temperature: refresh at most once per
+    TEMP_REPORT_INTERVAL_MS, holding the last value in between. The first reading
+    is reported immediately (no startup blackout). Non-blocking, never raises."""
+    global _reported_temp_f, _reported_temp_ms
+    now_ms = ticks_ms()
+    if (_reported_temp_f is None
+            or ticks_diff(now_ms, _reported_temp_ms) >= TEMP_REPORT_INTERVAL_MS):
+        _reported_temp_f = live_f
+        _reported_temp_ms = now_ms
+    return _reported_temp_f
+
+
 def read_water_ohms():
     """Live probe resistance in Ω for analog (NTC) sensors — published in status so
     the app's calibration wizard can capture (R, T) points. None for non-analog
@@ -2351,7 +2377,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
     }
     ui_state["schedule"] = _load_schedule()
     raw_inputs = read_inputs()
-    raw_inputs["rWaterTemp_F"] = temp_avg.update(raw_inputs.get("rWaterTemp_F", 0.0))
+    raw_inputs["rWaterTemp_F"] = normalize_temp_f(temp_avg.update(raw_inputs.get("rWaterTemp_F", 0.0)))
     inputs = apply_ui_overrides(raw_inputs, ui_state)
     outputs = ctrl.step(inputs)
     render_hmi(lcd, inputs, outputs, ctrl, ui_state, full=True)
@@ -2383,7 +2409,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
             _wdt.feed()
         _crumb(b"run")
         raw_inputs = read_inputs()
-        raw_inputs["rWaterTemp_F"] = temp_avg.update(raw_inputs.get("rWaterTemp_F", 0.0))
+        raw_inputs["rWaterTemp_F"] = normalize_temp_f(temp_avg.update(raw_inputs.get("rWaterTemp_F", 0.0)))
         ui_state["_water_temp_f"] = raw_inputs["rWaterTemp_F"]
         now = ticks_ms()
         update_touch_ui(touch, ui_state, ctrl, now, lcd)
