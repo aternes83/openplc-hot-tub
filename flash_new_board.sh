@@ -86,7 +86,6 @@ python3 -m mpremote connect "$PORT" resume \
   fs cp ota.py         :ota.py      + \
   fs cp st7796.py      :st7796.py   + \
   fs cp xpt2046.py     :xpt2046.py  + \
-  fs cp _tls_buf.py    :_tls_buf.py + \
   fs cp config.board.json :config.json
 rm -f config.board.json
 
