@@ -27,6 +27,87 @@
 import gc
 gc.collect()
 
+# ── OTA rollback manager ──────────────────────────────────────────────────────
+# Runs before anything else and imports NO application code — this is why boot.py
+# itself is never delivered over OTA. If an applied update hasn't confirmed itself
+# healthy (ota.confirm() clears the marker) within OTA_MAX_BOOT_ATTEMPTS boots,
+# restore the backed-up known-good files from ota_good/ and reboot. The hardware
+# watchdog reboots a hung build, so a crash/hang loop is counted here and rolled
+# back automatically. Must never raise.
+OTA_MAX_BOOT_ATTEMPTS = 3
+try:
+    import ujson as _oj, uos as _oos
+
+    def _o_exists(_p):
+        try:
+            _oos.stat(_p); return True
+        except Exception:
+            return False
+
+    if _o_exists("ota_pending"):
+        with open("ota_pending") as _pf:
+            _pend = _oj.loads(_pf.read())
+        _att = int(_pend.get("attempts", 0)) + 1
+        _pend["attempts"] = _att
+        with open("ota_pending", "w") as _pf:
+            _oj.dump(_pend, _pf)
+        print("boot: ota_pending v%s attempt %d" % (_pend.get("version", "?"), _att))
+        if _att > OTA_MAX_BOOT_ATTEMPTS:
+            print("boot: OTA update failed to confirm — ROLLING BACK")
+
+            def _o_copy(_s, _d):
+                with open(_s, "rb") as _sf:
+                    with open(_d, "wb") as _df:
+                        while True:
+                            _b = _sf.read(512)
+                            if not _b:
+                                break
+                            _df.write(_b)
+
+            _existed = _pend.get("existed", {})
+            for _nm in _pend.get("files", []):
+                _bak = "ota_good/" + _nm
+                try:
+                    if _existed.get(_nm, True) and _o_exists(_bak):
+                        _o_copy(_bak, _nm)                 # restore known-good
+                    elif not _existed.get(_nm, True):
+                        try:
+                            _oos.remove(_nm)               # was newly added → drop
+                        except Exception:
+                            pass
+                except Exception as _re:
+                    print("boot: rollback err", _nm, _re)
+            # clear markers
+            try:
+                _oos.remove("ota_pending")
+            except Exception:
+                pass
+            try:
+                for _f in _oos.listdir("ota_good"):
+                    try:
+                        _oos.remove("ota_good/" + _f)
+                    except Exception:
+                        pass
+                _oos.rmdir("ota_good")
+            except Exception:
+                pass
+            # Record the rollback so it's verifiable after the fact (boot.py can't
+            # import ota.py — that's a file OTA may have just reverted).
+            try:
+                with open("ota.log", "a") as _rf:
+                    _rf.write("boot: ROLLED BACK failed update v%s (after %d attempts)\n"
+                              % (_pend.get("version", "?"), _att - 1))
+            except Exception:
+                pass
+            print("boot: rollback complete — rebooting into known-good")
+            import machine as _om
+            _om.reset()
+    del _oj, _oos
+except Exception as _oe:
+    print("boot: OTA manager error (non-fatal):", _oe)
+
+gc.collect()
+
 try:
     import utime
     import ujson as json

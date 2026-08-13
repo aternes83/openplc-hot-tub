@@ -1979,6 +1979,12 @@ def _ble_apply_cmd(raw, ui_state, ctrl):
             _apply_schedule_cmd(cmd["schedule"], ui_state)
         if "set_temp_cal" in cmd:
             _apply_temp_cal(cmd["set_temp_cal"])
+        if "ota_apply" in cmd:
+            try:
+                import ota
+                ota.start_apply(str(cmd["ota_apply"]))   # fetch → verify → apply → reboot
+            except Exception:
+                pass
         ui_state.pop("_c_btn", None)
         ui_state.pop("_c_led", None)
     except Exception:
@@ -2393,6 +2399,25 @@ def main(loop_ms=CONTROL_LOOP_MS):
         except Exception:
             _mqtt = None
 
+    # OTA: drive the download/apply state machine, and confirm a freshly-applied
+    # update as healthy once we've run with MQTT up for OTA_CONFIRM_MS. If a trial
+    # boot can't confirm within OTA_TRIAL_DEADLINE_MS (e.g. the update broke MQTT),
+    # force a reboot so boot.py counts the failed attempt and rolls back. _ota_trial
+    # is cached once so healthy/normal boots do no extra work.
+    try:
+        import ota as _ota_mod
+    except Exception:
+        _ota_mod = None
+    _ota_confirmed = False
+    _ota_trial = False
+    if _ota_mod is not None:
+        try:
+            _ota_trial = _ota_mod.pending()
+        except Exception:
+            _ota_trial = False
+    OTA_CONFIRM_MS = 90000
+    OTA_TRIAL_DEADLINE_MS = 180000
+
     # Hardware watchdog: if the control loop hangs (e.g. a 1-Wire/WiFi lockup),
     # the board auto-reboots instead of needing a manual power cycle. Timeout is
     # comfortably above the longest legitimate single-iteration block (MQTT TLS
@@ -2542,6 +2567,25 @@ def main(loop_ms=CONTROL_LOOP_MS):
 
         if _mqtt is not None:
             _mqtt.tick(inputs, outputs, ctrl, ui_state, _wlan.isconnected())
+
+        # ── OTA: advance download/apply; confirm/roll-back a trial boot ───────
+        if _ota_mod is not None:
+            try:
+                _ota_mod.poll(now)
+            except Exception:
+                pass
+        if _ota_trial and not _ota_confirmed:
+            try:
+                _up = ticks_diff(now, _boot_ticks)
+                if _mqtt is not None and _mqtt.connected() and _up >= OTA_CONFIRM_MS:
+                    _ota_mod.confirm()          # new build is healthy → commit
+                    _ota_confirmed = True
+                    _ota_trial = False
+                elif _up >= OTA_TRIAL_DEADLINE_MS:
+                    import machine as _otm       # couldn't confirm → count attempt → rollback
+                    _otm.reset()
+            except Exception:
+                pass
 
         # ── BLE: icon state, receive commands, send periodic status ──────────
         if _ble is not None:

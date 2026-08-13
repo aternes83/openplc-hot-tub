@@ -1,8 +1,10 @@
 # Spa Controller Wiring Reference
 
-Target MCU: `ESP32-S3-DevKitC-1-N8R8`  
+Target MCU: `ESP32-S3-DevKitC-1-N8R8` (flashed with the **SPIRAM_OCT** MicroPython build — 8 MB heap)  
 Display: `Hosyond 4.0" 480x320 SPI TFT (ST7796S + XPT2046 touch)`  
 Firmware: `spa_control.py`
+
+**Guides:** [OTA firmware updates — how to prepare & deploy a release](OTA.md)
 
 ## Installer Quick Reference
 
