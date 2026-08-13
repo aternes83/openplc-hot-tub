@@ -106,12 +106,24 @@ def setup(host, port, user, pwd, cmd_handler, device_id=""):
                 _cl = _tls_buf.cl
                 _cl.set_callback(_on_msg)   # wire our callback
                 _cl.subscribe(_cmd_topic)
+                _subscribe_ota()
                 _tls_buf.cl = None
                 gc.collect()
                 _log("boot-conn ok free=%d" % gc.mem_free())
         except Exception:
             pass
+        # Wire the OTA module with the running version + a subscribe callback.
+        try:
+            import ota
+            ota.init(FIRMWARE_VERSION, _ota_subscribe)
+        except Exception:
+            pass
         _log("setup host=%s port=%d" % (host, port))
+
+
+def connected():
+    """True when an MQTT session is live (used to gate the OTA health confirm)."""
+    return _cl is not None
 
 
 def tick(inputs, outputs, ctrl, ui_state, wifi_connected):
@@ -158,6 +170,24 @@ def tick(inputs, outputs, ctrl, ui_state, wifi_connected):
             _connect_ms = now
             return
 
+    # During an OTA fetch, drain queued chunk messages fast (they arrive in a burst
+    # after the wildcard subscribe). Dispatch + gc.collect after EACH message so only
+    # one ~1 KB chunk is ever resident — the heap is tiny and can't hold a backlog.
+    try:
+        import ota
+        if ota.state() == "fetching":
+            for _ in range(60):
+                _cl.check_msg()
+                while _rx_buf:
+                    _t2, _p2 = _rx_buf.pop(0)
+                    _route(_t2, _p2)
+                gc.collect()
+    except Exception as e:
+        _log("ota drain: %s" % e)
+        _cl = None
+        _connect_ms = now
+        return
+
     # ── publish: immediately on control-state change, else 30 s heartbeat ──────
     if _cl is not None:
         sig = _status_signature(outputs, ctrl, ui_state)
@@ -168,12 +198,11 @@ def tick(inputs, outputs, ctrl, ui_state, wifi_connected):
             _pub_ms = now
             _do_publish(inputs, outputs, ctrl, ui_state)
 
-    # ── dispatch inbound commands ─────────────────────────────────────────────
+    # ── dispatch inbound messages (commands + OTA) ────────────────────────────
     while _rx_buf:
         try:
-            payload = _rx_buf.pop(0)
-            if _cmd_cb:
-                _cmd_cb(payload)
+            topic, payload = _rx_buf.pop(0)
+            _route(topic, payload)
         except Exception:
             pass
 
@@ -181,10 +210,57 @@ def tick(inputs, outputs, ctrl, ui_state, wifi_connected):
 # ── internal helpers ──────────────────────────────────────────────────────────
 
 def _on_msg(topic, payload):
+    # Buffer (topic, payload) so tick() can route commands vs OTA off the MQTT
+    # callback stack. Copy both — umqtt reuses its receive buffers.
     try:
-        _rx_buf.append(bytes(payload))
+        _rx_buf.append((bytes(topic), bytes(payload)))
     except Exception:
         pass
+
+
+def _route(topic, payload):
+    """Dispatch a buffered message by topic: OTA manifest/file → ota, else the
+    normal command handler."""
+    try:
+        import ota
+        if topic == ota.MANIFEST_TOPIC:
+            ota.on_manifest(payload)
+            return
+        if topic.startswith(ota.FILE_TOPIC_PREFIX):
+            ota.on_file(topic, payload)
+            return
+    except Exception:
+        pass
+    if _cmd_cb:
+        _cmd_cb(payload)
+
+
+def _ota_subscribe(topic):
+    """Subscribe callback handed to ota.py so it can pull file topics on demand."""
+    try:
+        if _cl is not None:
+            _cl.subscribe(topic)
+    except Exception:
+        pass
+
+
+def _subscribe_ota():
+    """Subscribe to the retained OTA manifest so the board learns about updates."""
+    try:
+        import ota
+        if _cl is not None:
+            _cl.subscribe(ota.MANIFEST_TOPIC)
+    except Exception:
+        pass
+
+
+def _ota_status():
+    """(ota_avail_version_or_None, ota_state) for the status publish."""
+    try:
+        import ota
+        return ota.available(), ota.state()
+    except Exception:
+        return None, "idle"
 
 
 def _do_connect(_t):
@@ -233,6 +309,7 @@ def _do_connect(_t):
         cl.subscribe(_cmd_topic)
         gc.collect()
         _cl = cl
+        _subscribe_ota()
         _log("connected free=%d" % gc.mem_free())
 
     except Exception as e:
@@ -265,6 +342,7 @@ def _status_signature(outputs, ctrl, ui_state):
         bool(ui_state.get("_sched_active", False)),
         bool(outputs.get("xFault")),
         int(outputs.get("iFaultCode", 0)),
+        _ota_status(),   # (avail_version, state) — publish promptly when it changes
     )
 
 
@@ -273,6 +351,7 @@ def _do_publish(inputs, outputs, ctrl, ui_state):
     try:
         import ujson as _j
         _ro = inputs.get("rWaterOhms")
+        _ota_avail, _ota_state = _ota_status()
         msg = _j.dumps({
             "id":         _device_id,
             "temp_f":     round(inputs.get("rWaterTemp_F", 0.0), 1),
@@ -296,6 +375,9 @@ def _do_publish(inputs, outputs, ctrl, ui_state):
             "fault":      bool(outputs.get("xFault")),
             "fault_code": int(outputs.get("iFaultCode", 0)),
             "fw":         FIRMWARE_VERSION,
+            # OTA: newer version available (or null) + current updater state.
+            "ota_avail":  _ota_avail,
+            "ota_state":  _ota_state,
         })
         _cl.publish(_status_topic, msg.encode(), retain=True, qos=0)
         _log("pub OK")
