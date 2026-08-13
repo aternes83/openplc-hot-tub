@@ -18,7 +18,12 @@ set -euo pipefail
 
 PORT="${1:-}"
 DO_FW=0; [ "${2:-}" = "--firmware" ] && DO_FW=1
-FW="ESP32_GENERIC_S3-20260406-v1.28.0.bin"
+# SPIRAM_OCT build: enables the N8R8's 8 MB octal PSRAM as MicroPython heap (~8 MB
+# vs ~120 KB internal-only). Fixes the heap fragmentation the app fought (OTA large
+# transfers, TLS handshake gymnastics in boot.py). Same v1.28.0 → .mpy-compatible.
+# Get it from micropython.org/download/ESP32_GENERIC_S3/ (SPIRAM_OCT variant).
+# Old non-PSRAM build kept for reference: ESP32_GENERIC_S3-20260406-v1.28.0.bin
+FW="ESP32_GENERIC_S3-SPIRAM_OCT-20260406-v1.28.0.bin"
 DIR="$(cd "$(dirname "$0")" && pwd)"; cd "$DIR"
 
 [ -n "$PORT" ] || { echo "usage: $0 <PORT> [--firmware]"; exit 1; }
@@ -27,8 +32,11 @@ DIR="$(cd "$(dirname "$0")" && pwd)"; cd "$DIR"
 if [ "$DO_FW" = 1 ]; then
   [ -f "$FW" ] || { echo "error: firmware $FW missing"; exit 1; }
   echo "==> read-only chip id (gate before erase)"
+  # On native USB the S3 will NOT auto-enter download mode. If this fails with
+  # "No serial data received", put the board in download mode by hand:
+  #   hold BOOT, tap RESET (or replug USB while holding BOOT), release BOOT — then retry.
   python3 -m esptool --chip esp32s3 --port "$PORT" flash_id | grep -iE "Chip is|MAC:" \
-    || { echo "not a confirmable ESP32-S3 in download mode — ABORT"; exit 1; }
+    || { echo "NOT in download mode. Hold BOOT, tap RESET, release BOOT, then re-run."; exit 1; }
   echo "==> ERASING + flashing MicroPython on $PORT"
   python3 -m esptool --chip esp32s3 --port "$PORT" erase_flash
   python3 -m esptool --chip esp32s3 --port "$PORT" --baud 460800 write_flash -z 0 "$FW"
@@ -75,6 +83,7 @@ python3 -m mpremote connect "$PORT" resume \
   fs cp main_loader.py :main.py     + \
   fs cp spa_main.mpy   :spa_main.mpy + \
   fs cp mqtt_spa.py    :mqtt_spa.py + \
+  fs cp ota.py         :ota.py      + \
   fs cp st7796.py      :st7796.py   + \
   fs cp xpt2046.py     :xpt2046.py  + \
   fs cp _tls_buf.py    :_tls_buf.py + \
@@ -83,6 +92,9 @@ rm -f config.board.json
 
 echo "==> filesystem on board:"
 python3 -m mpremote connect "$PORT" resume fs ls
+echo "==> heap size (SPIRAM check — expect multi-MB with the SPIRAM_OCT build):"
+python3 -m mpremote connect "$PORT" resume exec \
+  "import gc; gc.collect(); print('  heap bytes:', gc.mem_free()+gc.mem_alloc())"
 echo "==> device_id:"
 python3 -m mpremote connect "$PORT" resume exec \
   "import machine,ubinascii; print(ubinascii.hexlify(machine.unique_id()).decode())"
