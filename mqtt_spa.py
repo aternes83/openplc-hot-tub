@@ -44,8 +44,6 @@ _CHECK_INTERVAL_MS   =   1_000
 _PUB_INTERVAL_MS     =  30_000   # heartbeat republish interval
 _CHANGE_MIN_MS       =     250   # min gap between change-triggered publishes
 
-_tls_reserve = None   # unused now; boot.py pre-connects instead
-
 
 # ── rolling log ───────────────────────────────────────────────────────────────
 
@@ -99,20 +97,8 @@ def setup(host, port, user, pwd, cmd_handler, device_id=""):
     _check_ms   = 0
     _pub_ms     = 0
     if _ready:
-        # Pick up a client pre-connected in boot.py while the heap was clean.
-        try:
-            import _tls_buf
-            if hasattr(_tls_buf, 'cl') and _tls_buf.cl is not None:
-                _cl = _tls_buf.cl
-                _cl.set_callback(_on_msg)   # wire our callback
-                _cl.subscribe(_cmd_topic)
-                _subscribe_ota()
-                _tls_buf.cl = None
-                gc.collect()
-                _log("boot-conn ok free=%d" % gc.mem_free())
-        except Exception:
-            pass
-        # Wire the OTA module with the running version + a subscribe callback.
+        # MQTT connects lazily in tick() → _do_connect (no boot.py pre-connect any
+        # more — the SPIRAM heap makes it unnecessary). Wire the OTA module here.
         try:
             import ota
             ota.init(FIRMWARE_VERSION, _ota_subscribe)
