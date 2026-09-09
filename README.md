@@ -4,6 +4,10 @@ Target MCU: `ESP32-S3-DevKitC-1-N8R8` (flashed with the **SPIRAM_OCT** MicroPyth
 Display: `Hosyond 4.0" 480x320 SPI TFT (ST7796S + XPT2046 touch)`  
 Firmware: `spa_control.py`
 
+Pin map source of truth: the **BOARD PIN MAP** block in `spa_control.py` — every GPIO the
+firmware touches is defined there, and the tables below mirror it. Retargeting to another
+board (e.g. the ESP32-S3 single board controller) means editing that block and these tables.
+
 **Guides:** [OTA firmware updates — how to prepare & deploy a release](OTA.md)
 
 ## Installer Quick Reference
@@ -48,7 +52,7 @@ Firmware: `spa_control.py`
 | `LCD_CS` | 2 |
 | `LCD_DC` | 1 |
 | `LCD_RST` | 3 |
-| `LCD_BL` | 22 |
+| `LCD_BL` | 44 |
 | `TOUCH_CS` | 43 |
 | `TOUCH_IRQ` | 45 |
 
@@ -125,7 +129,7 @@ Firmware: `spa_control.py`
 | `LCD_CS` | 2 | LCD chip select |
 | `LCD_DC` | 1 | Data/command |
 | `LCD_RST` | 3 | Hardware reset |
-| `LCD_BL` | 22 | Backlight PWM (NPN transistor gate) |
+| `LCD_BL` | 44 | Backlight PWM (NPN transistor gate) |
 
 ### Touch Control (XPT2046)
 
@@ -147,7 +151,7 @@ Firmware: `spa_control.py`
 | `DC/RS` | `LCD_DC` |
 | `SDI` | `MOSI` |
 | `SCK` | `SCK` |
-| `LED` | NPN transistor collector (GPIO22 controls gate) |
+| `LED` | NPN transistor collector (GPIO44 controls gate) |
 | `SDO` | `MISO` |
 
 ### XPT2046 Touch Header
@@ -176,7 +180,7 @@ ESP32-S3-DevKitC-1-N8R8
                                    LCD_CS   <- GPIO2
                                    LCD_DC   <- GPIO1
                                    LCD_RST  <- GPIO3
-                                   LCD_LED  <- GPIO22 (via NPN transistor)
+                                   LCD_LED  <- GPIO44 (via NPN transistor)
 
                                    T_CLK    <- GPIO42 (shared)
                                    T_DIN    <- GPIO47 (shared)
@@ -194,15 +198,15 @@ The Hosyond module's `LED` pin is wired directly to 5V on the PCB (always-on).
 To enable software brightness control a small NPN transistor is added in-line:
 
 ```text
-GPIO22 ──[470 Ω]──┐
+GPIO44 ──[470 Ω]──┐
                   NPN Base   (e.g. 2N2222 / BC547 / S8050)
 5V ─── LED(+) ─── LED(−) ── NPN Collector
                              NPN Emitter ── GND
 ```
 
-- `GPIO22 HIGH` → transistor ON → backlight on
-- `GPIO22 LOW`  → transistor OFF → backlight off
-- PWM on GPIO22 gives proportional brightness control (1 kHz carrier)
+- `GPIO44 HIGH` → transistor ON → backlight on
+- `GPIO44 LOW`  → transistor OFF → backlight off
+- PWM on GPIO44 gives proportional brightness control (1 kHz carrier)
 - `DISPLAY_BL_ACTIVE_LOW = False` (active-high, matches this circuit)
 
 ## Reserved/Caution Pins (ESP32-S3)
