@@ -277,12 +277,15 @@ class ST7796:
     def fill(self, color):
         self.fill_rect(0, 0, self.width, self.height, color)
 
-    def text(self, s, x, y, color=0xFFFF):
+    def text(self, s, x, y, color=0xFFFF, bg=0x0000):
+        # framebuf.text() only sets the foreground pixels, so filling the glyph box
+        # with the colour that's already under the text (bg) makes the box invisible
+        # while still erasing any previous text. Pass bg = the panel/button colour.
         w = len(s) * 8
         h = 8
         buf = bytearray(w * h * 2)
         fb = framebuf.FrameBuffer(buf, w, h, framebuf.RGB565)
-        fb.fill(0)
+        fb.fill(self._swap_bytes(bg))
         fb.text(s, 0, 0, self._swap_bytes(color))
         self._draw_buffer(x, y, w, h, buf)
 

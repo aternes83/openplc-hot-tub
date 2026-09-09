@@ -870,7 +870,7 @@ def _draw_button_v2(lcd, rect, label, active=False, act_color=0x0492):
     lcd.fill_rect(x + w - 1, y, 1, h, C_DIM)   # right shadow
     lx = x + (w - len(label) * 8) // 2
     ly = y + (h - 8) // 2
-    lcd.text(label, lx, ly, C_TEXT)
+    lcd.text(label, lx, ly, C_TEXT, bg)   # bg = button fill → no black box behind label
 
 
 def _get_time_str():
@@ -982,11 +982,11 @@ def _draw_static_frame(lcd):
 
     # ── Temperature panel ─────────────────────────────────────────────────────
     _tw = _PNL_T_W
-    lcd.text("WATER TEMP", (_tw - 10 * 8) // 2, T + 8,  C_LABEL)
+    lcd.text("WATER TEMP", (_tw - 10 * 8) // 2, T + 8,  C_LABEL, C_BG)
     lcd.fill_rect(_PNL_T_X, T + 22,  _tw, 1, C_BORDER)  # below label
     # [big temp digits: _BIG_TEMP_Y … _BIG_TEMP_Y+77]
     lcd.fill_rect(_PNL_T_X, T + 108, _tw, 1, C_BORDER)  # between water and target
-    lcd.text("TARGET TEMP", (_tw - 11 * 8) // 2, T + 114, C_LABEL)
+    lcd.text("TARGET TEMP", (_tw - 11 * 8) // 2, T + 114, C_LABEL, C_BG)
     lcd.fill_rect(_PNL_T_X, T + 130, _tw, 1, C_BORDER)  # below label
     # [setpoint digits: _BIG_SP_Y … _BIG_SP_Y+56]
     lcd.fill_rect(_PNL_T_X, T + 200, _tw, 1, C_BORDER)  # above +/- buttons
@@ -995,21 +995,21 @@ def _draw_static_frame(lcd):
     _draw_round_btn(lcd, 152, T + 208, 120, 44, 12, "+")
 
     # ── Controls panel ────────────────────────────────────────────────────────
-    lcd.text("JET 1",     357, T + 8,   C_LABEL)
+    lcd.text("JET 1",     357, T + 8,   C_LABEL, C_PANEL)
     lcd.fill_rect(_PNL_C_X, T + 28,  _PNL_C_W, 1, C_BORDER)
     lcd.fill_rect(_PNL_C_X, T + 72,  _PNL_C_W, 1, C_BORDER)
-    lcd.text("JET 2 / 3", 341, T + 80,  C_LABEL)
+    lcd.text("JET 2 / 3", 341, T + 80,  C_LABEL, C_PANEL)
     lcd.fill_rect(_PNL_C_X, T + 128, _PNL_C_W, 1, C_BORDER)
-    lcd.text("LIGHT",     361, T + 136, C_LABEL)
+    lcd.text("LIGHT",     361, T + 136, C_LABEL, C_PANEL)
     lcd.fill_rect(_PNL_C_X, T + 192, _PNL_C_W, 1, C_BORDER)
-    lcd.text("MODES",     361, T + 196, C_LABEL)
+    lcd.text("MODES",     361, T + 196, C_LABEL, C_PANEL)
 
     # ── Bottom status bar ─────────────────────────────────────────────────────
     _sb_ty = _STATUS_BAR_Y + (_STATUS_BAR_H - 8) // 2
-    lcd.text("HEAT",  52,  _sb_ty, C_LABEL)
-    lcd.text("JETS",  172, _sb_ty, C_LABEL)
-    lcd.text("LITE",  292, _sb_ty, C_LABEL)
-    lcd.text("FAULT", 408, _sb_ty, C_LABEL)
+    lcd.text("HEAT",  52,  _sb_ty, C_LABEL, C_PANEL)
+    lcd.text("JETS",  172, _sb_ty, C_LABEL, C_PANEL)
+    lcd.text("LITE",  292, _sb_ty, C_LABEL, C_PANEL)
+    lcd.text("FAULT", 408, _sb_ty, C_LABEL, C_PANEL)
 
 
 def _touch_point(touch):
@@ -1081,7 +1081,7 @@ def _update_setpoint_display(lcd, ctrl, ui_state=None):
         return
     _draw_temp_int(lcd, ctrl.temp_setpoint_f, _BIG_SP_X, _BIG_SP_Y, _SP_SCALE, C_SP_ON, C_BG)
     lcd.fill_rect(_SP_DEG_X, _BIG_SP_Y, 20, 12, C_BG)
-    lcd.text("oF", _SP_DEG_X, _BIG_SP_Y + 2, C_LABEL)
+    lcd.text("oF", _SP_DEG_X, _BIG_SP_Y + 2, C_LABEL, C_BG)
     if ui_state is not None:
         ui_state["_c_sp"] = ctrl.temp_setpoint_f  # keep cache in sync
 
@@ -1364,11 +1364,11 @@ def _update_timer_display(lcd, inputs, ctrl, ui_state, now_ms):
 
     lcd.fill_rect(spa_x, spa_y - 1, TIMER_LABEL_WIDTH, 10, C_PANEL)
     lcd.text("SPA  " + _fmt_timer(spa_remain_s), spa_x, spa_y,
-             C_TEXT if spa_remain_s > 0 else C_DIM)
+             C_TEXT if spa_remain_s > 0 else C_DIM, C_PANEL)
 
     lcd.fill_rect(light_x, light_y - 1, TIMER_LABEL_WIDTH, 10, C_PANEL)
     lcd.text("LGT  " + _fmt_timer(light_remain_s), light_x, light_y,
-             C_LED_YE if light_remain_s > 0 else C_DIM)
+             C_LED_YE if light_remain_s > 0 else C_DIM, C_PANEL)
 
 
 def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
@@ -1403,7 +1403,7 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
         lcd.fill_rect(390, 0, 90, _TOP_BAR_H - 1, C_PANEL)
         _draw_bt_icon(lcd,  396, ty, C_LABEL if bt_con else C_BORDER)
         _draw_wifi_icon(lcd, 410, ty, C_LABEL if wifi_con else C_BORDER)
-        lcd.text(time_str,   436, tt, C_LABEL)
+        lcd.text(time_str,   436, tt, C_LABEL, C_PANEL)
 
     heat_req  = ui_state["xHeatRequest"]
     light_req = ui_state["xLightRequest"]
@@ -1423,7 +1423,7 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
         _draw_temp_int(lcd, wt_raw, _BIG_TEMP_X, _BIG_TEMP_Y,
                        _TEMP_SCALE, C_SEG_ON, C_BG)
         lcd.fill_rect(_TEMP_DEG_X, _BIG_TEMP_Y, 20, 12, C_BG)
-        lcd.text("oF", _TEMP_DEG_X, _BIG_TEMP_Y + 4, C_LABEL)
+        lcd.text("oF", _TEMP_DEG_X, _BIG_TEMP_Y + 4, C_LABEL, C_BG)
 
     # ── Setpoint (only redraws when value changes) ────────────────────────────
     sp = ctrl.temp_setpoint_f
@@ -1432,7 +1432,7 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
         _draw_temp_int(lcd, sp, _BIG_SP_X, _BIG_SP_Y,
                        _SP_SCALE, C_SP_ON, C_BG)
         lcd.fill_rect(_SP_DEG_X, _BIG_SP_Y, 20, 12, C_BG)
-        lcd.text("oF", _SP_DEG_X, _BIG_SP_Y + 2, C_LABEL)
+        lcd.text("oF", _SP_DEG_X, _BIG_SP_Y + 2, C_LABEL, C_BG)
 
     # ── Status bar LEDs (only redraws when any status changes) ───────────────
     _sb_led_y = _STATUS_BAR_Y + (_STATUS_BAR_H - 12) // 2
@@ -1447,10 +1447,10 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
         _sb_ty = _STATUS_BAR_Y + (_STATUS_BAR_H - 8) // 2
         if fault:
             lcd.fill_rect(408, _sb_ty - 1, 56, 10, C_PANEL)
-            lcd.text("FC:%d" % fc, 408, _sb_ty, C_FAULT)
+            lcd.text("FC:%d" % fc, 408, _sb_ty, C_FAULT, C_PANEL)
         else:
             lcd.fill_rect(408, _sb_ty - 1, 56, 10, C_PANEL)
-            lcd.text("FAULT", 408, _sb_ty, C_LABEL)
+            lcd.text("FAULT", 408, _sb_ty, C_LABEL, C_PANEL)
 
     # ── Controls panel buttons (only redraws when state changes) ─────────────
     eco_mode   = bool(ui_state.get("eco_mode",   False))
@@ -1504,6 +1504,33 @@ def _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state):
                         active=eco_mode,   act_color=0x0640)   # muted green
         _draw_button_v2(lcd, UI_BUTTONS["max_jet"], mj_label,
                         active=max_jet_on, act_color=0x7800)   # deep orange
+
+
+# Repaint the whole HMI so a rare SPI glitch can't leave a region corrupted until
+# reboot. The ST7796 driver writes straight to GRAM (no full framebuffer) and fields
+# only repaint when their value changes — so a stable reading (e.g. water temp
+# holding at 79) can keep a glitched region on screen for hours. This heal runs
+# ONLY while the backlight is off (on entering sleep + as a backstop through a long
+# sleep), so it is never visible during use — the screen is already clean on wake.
+HMI_HEAL_INTERVAL_MS = 600_000   # 10 min backstop while asleep
+
+
+def _hmi_heal(lcd, inputs, outputs, ctrl, ui_state):
+    """Force a clean in-place repaint: static chrome + every dynamic field. No
+    lcd.fill (the panel fills overwrite corruption directly, so no black flash).
+    Never raises."""
+    if lcd is None:
+        return
+    try:
+        _draw_static_frame(lcd)
+        for _k in ("_c_wt", "_c_sp", "_c_led", "_c_btn", "_c_top"):
+            ui_state.pop(_k, None)
+        _render_dynamic_fields(lcd, inputs, outputs, ctrl, ui_state)
+        ui_state["_dynamic_key"] = _dynamic_snapshot(inputs, outputs, ctrl, ui_state)
+        if hasattr(lcd, "show"):
+            lcd.show()
+    except Exception:
+        pass
 
 
 def render_hmi(lcd, inputs, outputs, ctrl, ui_state, full=False):
@@ -2417,6 +2444,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
             _ota_trial = False
     OTA_CONFIRM_MS = 90000
     OTA_TRIAL_DEADLINE_MS = 180000
+    _hmi_heal_ms = ticks_ms()   # HMI self-heal backstop clock
 
     # Hardware watchdog: if the control loop hangs (e.g. a 1-Wire/WiFi lockup),
     # the board auto-reboots instead of needing a manual power cycle. Timeout is
@@ -2659,6 +2687,15 @@ def main(loop_ms=CONTROL_LOOP_MS):
         elif dim_state == "dim" and idle_ms >= BL_SLEEP_TIMEOUT_MS:
             _set_backlight(0)
             ui_state["_dim_state"] = "sleep"
+            # HMI self-heal, done ONLY while the backlight is off so it's never
+            # visible during use: repaint clean the moment the screen sleeps, then
+            # again every HMI_HEAL_INTERVAL_MS through a long sleep. On wake the
+            # screen is already clean — no full refresh on touch or on temp change.
+            _hmi_heal(lcd, inputs, outputs, ctrl, ui_state)
+            _hmi_heal_ms = now
+        elif dim_state == "sleep" and ticks_diff(now, _hmi_heal_ms) >= HMI_HEAL_INTERVAL_MS:
+            _hmi_heal(lcd, inputs, outputs, ctrl, ui_state)
+            _hmi_heal_ms = now
         dynamic_key = _dynamic_snapshot(inputs, outputs, ctrl, ui_state)
         if dynamic_key != ui_state["_dynamic_key"]:
             ui_state["_dynamic_key"] = dynamic_key
