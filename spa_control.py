@@ -9,7 +9,8 @@ Plant assumptions:
 - Temperature inputs/setpoints in Fahrenheit
 
 Board profile in this file:
-- ESP32-S3-DevKitC-1-N8R8 pin map with practical GPIO assignments
+- Every GPIO lives in the single "BOARD PIN MAP" block; retargeting the firmware
+  to another board should not require edits outside it.
 - Inputs use pull-ups and are treated as active-high by default
 
 Review relay board polarity and sensor scaling before energizing loads.
@@ -131,8 +132,9 @@ _hmi_lcd     = None   # ST7796 instance – used by _set_backlight for WRDISBV
 def _set_backlight(duty_pct):
     """Set backlight brightness 0–100 %.
 
-    Uses GPIO PWM (primary) for hardware dimming via transistor on GPIO44,
-    plus ST7796S WRDISBV register for an additional software brightness layer.
+    Uses GPIO PWM (primary) for hardware dimming via the transistor on
+    DISPLAY_PINS["LCD_BL"], plus the ST7796S WRDISBV register as an additional
+    software brightness layer.
     Falls back to digital on/off if PWM is unavailable.
     """
     pct = max(0, min(100, int(duty_pct)))
@@ -361,19 +363,33 @@ class SpaController:
         }
 
 
-# ------------------- ESP32-S3-DevKitC-1-N8R8 pin map -------------------
-# Notes:
-# - Avoid GPIO0 for normal controls (boot strap).
-# - Avoid GPIO19/GPIO20 (USB D-/D+) unless USB is not used.
-# - Avoid GPIO45/GPIO46 for outputs (input-only/strap related on ESP32-S3).
-# - GPIO26..GPIO37 are commonly tied to module flash/PSRAM and not for user I/O.
+# ═════════════════════════════════════════════════════════════════════════════
+# BOARD PIN MAP — ESP32-S3-DevKitC-1-N8R8
+# ═════════════════════════════════════════════════════════════════════════════
+# Every GPIO number this firmware touches is defined in this one block, so a
+# hardware revision (e.g. the ESP32-S3 single board controller) changes nothing
+# outside it. If you need a GPIO number elsewhere in this file, add it here and
+# reference it by name — a bare pin number anywhere below is a bug waiting for
+# the next board spin.
 #
-# These assignments are chosen from generally usable DevKitC-1 exposed GPIOs.
+# ESP32-S3 constraints to respect when re-assigning:
+# - GPIO0 is a boot strap — safe only for 1-Wire, which idles high via pull-up.
+# - GPIO19/GPIO20 are USB D-/D+ — unusable while USB is in use.
+# - GPIO26..GPIO37 are tied to the module's flash/PSRAM on N8R8 — not user I/O.
+# - GPIO45/GPIO46 are strap/input-only — inputs and IRQs only, never outputs.
+# - Analog must be on ADC1 (GPIO1..GPIO10); ADC2 is unusable while WiFi is up.
+#
+# Electrical/calibration settings that are also board-specific — backlight
+# polarity, SPI baudrate, touch calibration — follow immediately after this
+# block; they are values, not pins, so they are kept separate.
+BOARD_REVISION = "esp32-s3-devkitc-1-n8r8"   # logged at boot; retarget with the map
+
+# ── Digital inputs — pulled up, active-high by default ───────────────────────
 INPUT_PINS = {
     "xSpaEnable": 4,
     "xPumpRequest": 5,
-    # GPIO6 was the heat-call input — now the NTC temperature ADC (NTC_DEFAULT_PIN).
-    # xHeatRequest is kept logically armed via ui_state (heat is driven by measured
+    # GPIO6 was the heat-call input — it is now the NTC ADC (SENSOR_PINS below).
+    # xHeatRequest stays logically armed via ui_state (heat is driven by measured
     # temp vs setpoint), so no physical input pin is needed here.
     "xPump1HighRequest": 7,
     "xPump2Request": 15,
@@ -386,6 +402,7 @@ INPUT_PINS = {
     "xRemoteEStopOK": 11,
 }
 
+# ── Digital outputs — drive the relay/contactor board, all idle low ──────────
 OUTPUT_PINS = {
     "xPump1_Low": 12,
     "xPump1_High": 13,
@@ -397,20 +414,20 @@ OUTPUT_PINS = {
     "xLight": 41,
 }
 
-IN = {name: Pin(gpio, Pin.IN, Pin.PULL_UP) for name, gpio in INPUT_PINS.items()}
-OUT = {name: Pin(gpio, Pin.OUT, value=0) for name, gpio in OUTPUT_PINS.items()}
+# ── Temperature sensing ──────────────────────────────────────────────────────
+# NTC_ADC must stay on ADC1. DS18B20_1W is the legacy 1-Wire probe; GPIO0 is a
+# boot strap but 1-Wire idles high through its pull-up, so boot is unaffected.
+SENSOR_PINS = {
+    "NTC_ADC": 6,        # ADC1_CH5
+    "DS18B20_1W": 0,     # legacy 1-Wire probe
+}
 
-# ------------------- Hosyond 4.0" ST7796S + XPT2046 -------------------
-# Display SPI bus (shared with touch):
-#   SCK=GPIO42, MOSI=GPIO47, MISO=GPIO48
-# LCD control:
-#   CS=GPIO2, DC=GPIO1, RST=GPIO3
-#   BL=GPIO44  (NPN transistor gate; GPIO44 HIGH = backlight ON)
-#   Note: the module's LED pin was originally wired directly to 5V (no dimming).
-#         A transistor has been added between GPIO44 and the LED cathode so that
-#         PWM on GPIO44 now gives full brightness control.
-# Touch control:
-#   CS=GPIO43, IRQ=GPIO45 (GPIO45 is input-only on ESP32-S3, good for IRQ)
+# ── Display + touch — Hosyond 4.0" ST7796S with XPT2046, one shared SPI bus ──
+# LCD_BL drives an NPN transistor gate on the module's LED cathode (added to the
+# module, whose LED pin was originally strapped to 5 V), so PWM on it gives real
+# brightness control; HIGH = backlight on.
+# TOUCH_IRQ is on GPIO45, which is input-only on the S3 — ideal for an IRQ line.
+DISPLAY_SPI_BUS = 1
 DISPLAY_PINS = {
     "SCK": 42,
     "MOSI": 47,
@@ -422,6 +439,10 @@ DISPLAY_PINS = {
     "TOUCH_CS": 43,
     "TOUCH_IRQ": 45,
 }
+# ═════════════════════ end of board pin map ══════════════════════════════════
+
+IN = {name: Pin(gpio, Pin.IN, Pin.PULL_UP) for name, gpio in INPUT_PINS.items()}
+OUT = {name: Pin(gpio, Pin.OUT, value=0) for name, gpio in OUTPUT_PINS.items()}
 
 # Hosyond 4.0" ST7796S SPI modules: LED/BL is active-high (3.3 V on = backlight on).
 DISPLAY_BL_ACTIVE_LOW = False
@@ -630,7 +651,7 @@ def init_hmi():
     """
     global _hmi_lcd_cs, _hmi_bl_pwm, _hmi_bl_pin, _hmi_lcd
     spi = SPI(
-        1,
+        DISPLAY_SPI_BUS,
         baudrate=DISPLAY_SPI_BAUDRATE,
         polarity=0,
         phase=0,
@@ -1582,9 +1603,9 @@ def render_hmi(lcd, inputs, outputs, ctrl, ui_state, full=False):
 #   "sensor": {"type":"none"}                             # bench/dev stub, no sensor
 
 # ── NTC thermistor (default) ──────────────────────────────────────────────────
-NTC_DEFAULT_PIN      = 6        # GPIO6 = ADC1_CH5 (ADC1 is WiFi-safe; ADC2 is not).
-                                # Repurposed from the vestigial heat-call input — a
-                                # real temp sensor makes an external heat call moot.
+NTC_DEFAULT_PIN      = SENSOR_PINS["NTC_ADC"]   # see BOARD PIN MAP. ADC1 is
+                                # WiFi-safe (ADC2 is not); repurposed from the vestigial
+                                # heat-call input — a real temp sensor makes it moot.
 NTC_READ_INTERVAL_MS = 1000     # ADC reads are cheap + instant; 1 s is plenty
 NTC_OVERSAMPLE       = 16       # averaged samples to knock down noise/EMI on long leads
 NTC_VSUPPLY_V        = 3.3      # divider top rail (absorbed by calibration if slightly off)
@@ -1596,7 +1617,7 @@ NTC_DEFAULT_CAL      = {"r_fixed": 10000.0, "r0": 10000.0, "t0_c": 25.0,
                         "beta": 3950.0, "offset_f": 0.0}
 
 # ── DS18B20 (legacy 1-Wire) ───────────────────────────────────────────────────
-SENSOR_DEFAULT_PIN   = 0        # GPIO0 1-Wire idles high via pull-up → boot unaffected
+SENSOR_DEFAULT_PIN   = SENSOR_PINS["DS18B20_1W"]   # see BOARD PIN MAP
 DS18B20_CONVERT_MS   = 800      # 12-bit conversion (~750 ms) + margin
 DS18B20_READ_INTERVAL_MS = 30000  # rest between read cycles. 1-Wire bit-bang disables
                                   # IRQs for a few ms per read; combined with WiFi this
@@ -2298,6 +2319,7 @@ def main(loop_ms=CONTROL_LOOP_MS):
 
         gc.collect()
         _log_hmi("boot free mem: %s" % gc.mem_free())
+        _log_hmi("board: %s" % BOARD_REVISION)
     except Exception:
         pass
 
